@@ -1,4 +1,4 @@
-from kung_fu_chess.app import main
+from kungfu_chess.app import main
 
 
 if __name__ == '__main__':

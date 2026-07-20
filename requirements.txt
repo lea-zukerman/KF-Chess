@@ -1,1 +1,2 @@
 # Add runtime dependencies here
+opencv-python>=4.8.0
