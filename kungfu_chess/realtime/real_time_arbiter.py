@@ -1,4 +1,5 @@
 from ..constants import SHORT_REST_MS, LONG_REST_MS
+from ..rules.algebraic import cell_to_algebraic
 
 # Rest duration a piece takes after landing from each kind of action,
 # matching the asset pack's jump -> short_rest / move -> long_rest graph.
@@ -196,9 +197,7 @@ class RealTimeArbiter:
 
     @staticmethod
     def _algebraic(board, row: int, col: int) -> str:
-        file = chr(ord('a') + col)
-        rank = board._rows - row
-        return f"{file}{rank}"
+        return cell_to_algebraic(row, col, board._rows)
 
     @staticmethod
     def _final_token(board, move) -> str:

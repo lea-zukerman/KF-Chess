@@ -38,6 +38,18 @@ class Board:
         self._captured = {'w': [], 'b': []}  # color -> list of captured piece tokens
         self._cooldowns = {}  # (row, col) -> (ms timestamp resting until, rest state name)
 
+    @property
+    def rows(self) -> int:
+        return self._rows
+
+    @property
+    def cols(self) -> int:
+        return self._cols
+
+    @property
+    def selected_cell(self):
+        return self._selected_cell
+
     def is_resting(self, row: int, col: int, current_time_ms: int) -> bool:
         until_ms, _state = self._cooldowns.get((row, col), (0, None))
         return current_time_ms < until_ms
