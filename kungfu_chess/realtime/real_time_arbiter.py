@@ -87,6 +87,7 @@ class RealTimeArbiter:
 
         if target_current != '.' and target_current[1] == 'K':
             board._game_over = True
+            board._winner = move.piece_token[0]  # 'w' or 'b' -- the color that captured the king
 
         board._grid[move.to_row][move.to_col] = self._final_token(board, move)
         self._set_cooldown(board, move.to_row, move.to_col, current_time_ms, 'long_rest')

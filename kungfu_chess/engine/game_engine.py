@@ -32,6 +32,9 @@ class GameEngine:
     def is_game_over(self) -> bool:
         return self.board.is_game_over()
 
+    def winner(self):
+        return self.board.winner
+
     def get_board_string(self, current_time_ms: int) -> str:
         return self.board.get_canonical_string(current_time_ms)
 

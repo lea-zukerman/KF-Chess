@@ -32,6 +32,7 @@ class Board:
         self._active_moves = []  # list[realtime.motion.Move]
         self._active_jumps = []  # list[realtime.motion.Jump]
         self._game_over = False
+        self._winner = None
         self._arbiter = RealTimeArbiter()
         self._controller = Controller()
         self._move_log = []  # list[str] of resolved move descriptions
@@ -49,6 +50,10 @@ class Board:
     @property
     def selected_cell(self):
         return self._selected_cell
+
+    @property
+    def winner(self):
+        return self._winner
 
     def is_resting(self, row: int, col: int, current_time_ms: int) -> bool:
         until_ms, _state = self._cooldowns.get((row, col), (0, None))

@@ -59,6 +59,7 @@ class GameSession:
             "score": self.engine.get_score(current_time_ms),
             "move_log": self.engine.get_move_log(current_time_ms),
             "game_over": self.engine.is_game_over(),
+            "winner": self.engine.winner(),
         }
 
     def _publish_diff(self, current_time_ms: int) -> None:

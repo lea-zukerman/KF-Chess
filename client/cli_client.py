@@ -20,7 +20,10 @@ async def _receive_loop(websocket) -> None:
 async def _send_loop(websocket) -> None:
     loop = asyncio.get_event_loop()
     while True:
-        line = await loop.run_in_executor(None, input)
+        try:
+            line = await loop.run_in_executor(None, input)
+        except EOFError:
+            return
         if not line:
             continue
         logger.info("sending: %s", line)
@@ -30,7 +33,10 @@ async def _send_loop(websocket) -> None:
 async def run_client(host: str = "localhost", port: int = 8765) -> None:
     uri = f"ws://{host}:{port}"
     async with websockets.connect(uri) as websocket:
-        print(f"Connected to {uri}. Type commands like 'move e2 e4' or 'jump e4'.")
+        username = input("Username: ").strip() or "anonymous"
+        password = input("Password: ").strip()
+        await websocket.send(f"login {username} {password}")
+        print(f"Connected to {uri} as {username!r}. Type commands like 'move e2 e4' or 'jump e4'.")
         receive_task = asyncio.create_task(_receive_loop(websocket))
         send_task = asyncio.create_task(_send_loop(websocket))
         done, pending = await asyncio.wait(

@@ -14,6 +14,8 @@ from kungfu_chess.bus.event_bus import EventBus
 from kungfu_chess.app.game_session import GameSession
 from kungfu_chess.rules.algebraic import algebraic_to_cell
 
+from . import db, elo
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_BOARD_TEXT = """bR bN bB bQ bK bB bN bR
@@ -31,12 +33,14 @@ TICK_INTERVAL_S = 0.1
 class GameServer:
     """Holds one GameSession and the WebSocket connections attached to it."""
 
-    def __init__(self, board_text: str = DEFAULT_BOARD_TEXT):
+    def __init__(self, board_text: str = DEFAULT_BOARD_TEXT, db_path: str = db.DEFAULT_DB_PATH):
         board = Board.from_text_lines(board_text.strip().split("\n"))
         self.bus = EventBus()
         self.session = GameSession(board, self.bus)
         self.game_state = GameState()
         self.clients: dict = {}  # websocket -> role ('w' / 'b' / 'observer')
+        self.usernames: dict = {}  # websocket -> username
+        self.db_conn = db.init_db(db_path)
         self._start_time = time.monotonic()
 
         # Bus handlers are synchronous; bridge them to the async broadcast
@@ -63,20 +67,44 @@ class GameServer:
         return "observer"
 
     async def handle_client(self, websocket) -> None:
+        try:
+            credentials = (await websocket.recv()).strip()
+        except websockets.exceptions.ConnectionClosed:
+            return
+
+        parts = credentials.split(maxsplit=2)
+        if len(parts) != 3 or parts[0] != "login":
+            await websocket.send("error: expected 'login <username> <password>'")
+            await websocket.close()
+            return
+
+        _, username, password = parts
+        if not db.authenticate_or_register(self.db_conn, username, password):
+            await websocket.send("error: bad credentials")
+            await websocket.close()
+            return
+
         role = self._assign_role()
+        if role == "w":
+            self.game_state.white_name = username
+        elif role == "b":
+            self.game_state.black_name = username
+
+        self.usernames[websocket] = username
         if role != "observer":
-            await self._notify_others(f"player_joined: {role}")
+            await self._notify_others(f"player_joined: {role} ({username})")
         self.clients[websocket] = role
-        logger.info("client connected as %s (total=%d)", role, len(self.clients))
+        logger.info("client '%s' connected as %s (total=%d)", username, role, len(self.clients))
         await websocket.send(f"role: {role}")
         await self._broadcast_state()
         try:
             async for message in websocket:
-                logger.info("received from %s: %r", role, message)
+                logger.info("received from %s '%s': %r", role, username, message)
                 await self._handle_command(websocket, role, message)
         finally:
             del self.clients[websocket]
-            logger.info("client (%s) disconnected (total=%d)", role, len(self.clients))
+            del self.usernames[websocket]
+            logger.info("client '%s' (%s) disconnected (total=%d)", username, role, len(self.clients))
 
     async def _handle_command(self, websocket, role: str, message: str) -> None:
         parts = message.strip().split()
@@ -128,14 +156,31 @@ class GameServer:
             await ws.send(text)
 
     def _format_snapshot(self, snapshot: dict) -> str:
+        white_elo = db.get_elo(self.db_conn, self.game_state.white_name)
+        black_elo = db.get_elo(self.db_conn, self.game_state.black_name)
         lines = [
             "board:",
             snapshot["board"],
+            f"players: w:{self.game_state.white_name} b:{self.game_state.black_name}",
+            f"elo: w:{white_elo} b:{black_elo}",
             f"score: w:{snapshot['score']['w']} b:{snapshot['score']['b']}",
             f"turn: {self.game_state.current_turn}",
             f"game_over: {'true' if snapshot['game_over'] else 'false'}",
         ]
         return "\n".join(lines)
+
+    def _apply_elo_update(self) -> None:
+        winner = self.session.engine.winner()
+        if winner is None:
+            return
+        white_elo = db.get_elo(self.db_conn, self.game_state.white_name)
+        black_elo = db.get_elo(self.db_conn, self.game_state.black_name)
+        new_white, new_black = elo.compute_new_ratings(white_elo, black_elo, winner)
+        db.update_elo(self.db_conn, self.game_state.white_name, new_white)
+        db.update_elo(self.db_conn, self.game_state.black_name, new_black)
+        logger.info(
+            "elo updated: w:%d->%d b:%d->%d", white_elo, new_white, black_elo, new_black
+        )
 
     async def tick_loop(self) -> None:
         while True:
@@ -148,6 +193,8 @@ class GameServer:
         while True:
             event_type, _payload = await self._broadcast_queue.get()
             logger.info("bus event %s -> broadcasting state", event_type)
+            if event_type == "game_over":
+                self._apply_elo_update()
             await self._broadcast_state()
 
 
