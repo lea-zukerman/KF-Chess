@@ -2,7 +2,7 @@ import unittest
 
 import websockets
 
-from kungfu_chess.net.server import GameServer
+from server.server import GameServer
 
 
 class GameServerTests(unittest.IsolatedAsyncioTestCase):

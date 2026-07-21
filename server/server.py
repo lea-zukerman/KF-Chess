@@ -8,11 +8,11 @@ import time
 
 import websockets
 
-from ..model.board import Board
-from ..model.game_state import GameState
-from ..bus.event_bus import EventBus
-from ..app.game_session import GameSession
-from ..rules.algebraic import algebraic_to_cell
+from kungfu_chess.model.board import Board
+from kungfu_chess.model.game_state import GameState
+from kungfu_chess.bus.event_bus import EventBus
+from kungfu_chess.app.game_session import GameSession
+from kungfu_chess.rules.algebraic import algebraic_to_cell
 
 logger = logging.getLogger(__name__)
 
