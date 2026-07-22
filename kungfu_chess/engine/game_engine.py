@@ -32,6 +32,9 @@ class GameEngine:
     def is_game_over(self) -> bool:
         return self.board.is_game_over()
 
+    def resign(self, winner_color: str) -> None:
+        self.board.resign(winner_color)
+
     def winner(self):
         return self.board.winner
 

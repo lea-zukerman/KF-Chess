@@ -45,6 +45,15 @@ class GameEngineTests(unittest.TestCase):
 
         self.assertTrue(engine.is_game_over())
 
+    def test_resign_ends_the_game_for_the_remaining_color(self):
+        board = Board.from_text_lines(['. .', '. .'])
+        engine = GameEngine(board)
+
+        engine.resign('b')
+
+        self.assertTrue(engine.is_game_over())
+        self.assertEqual(engine.winner(), 'b')
+
 
 if __name__ == '__main__':
     unittest.main()

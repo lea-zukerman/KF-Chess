@@ -110,6 +110,15 @@ class BoardModelTests(unittest.TestCase):
         self.assertTrue(board.handle_click_at_cell(3, 0, 0, current_turn='b'))
         self.assertEqual(board._active_moves[0].to_row, 3)
 
+    def test_resign_ends_the_game_for_the_remaining_color(self):
+        lines = ['. .', '. .']
+        board = Board.from_text_lines(lines)
+
+        board.resign('w')
+
+        self.assertTrue(board.is_game_over())
+        self.assertEqual(board.winner, 'w')
+
 
 if __name__ == '__main__':
     unittest.main()

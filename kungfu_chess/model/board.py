@@ -91,6 +91,15 @@ class Board:
     def is_game_over(self) -> bool:
         return self._game_over
 
+    def resign(self, winner_color: str) -> None:
+        """End the game by resignation/disconnection rather than capture.
+
+        winner_color is the color that remains -- the opponent of whoever
+        resigned/disconnected.
+        """
+        self._game_over = True
+        self._winner = winner_color
+
     def get_move_log(self) -> list[str]:
         return list(self._move_log)
 

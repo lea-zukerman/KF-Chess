@@ -1,207 +1,107 @@
-"""Single-process WebSocket server: one game, driven entirely through
-GameSession/GameEngine, never touching Board internals directly."""
+"""Single-process WebSocket lobby: authenticates players, pairs them via
+Matchmaker, then hands each connection off to a Match for the actual game.
+Multiple Match instances can be alive at once, one per matched pair."""
 
 import argparse
 import asyncio
 import logging
-import time
 
 import websockets
 
-from kungfu_chess.model.board import Board
-from kungfu_chess.model.game_state import GameState
-from kungfu_chess.bus.event_bus import EventBus
-from kungfu_chess.app.game_session import GameSession
-from kungfu_chess.rules.algebraic import algebraic_to_cell
-
-from . import db, elo
+from . import db
+from .matchmaking import Matchmaker, NoOpponentFound
+from .match import Match
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_BOARD_TEXT = """bR bN bB bQ bK bB bN bR
-bP bP bP bP bP bP bP bP
-.  .  .  .  .  .  .  .
-.  .  .  .  .  .  .  .
-.  .  .  .  .  .  .  .
-.  .  .  .  .  .  .  .
-wP wP wP wP wP wP wP wP
-wR wN wB wQ wK wB wN wR"""
-
-TICK_INTERVAL_S = 0.1
-
 
 class GameServer:
-    """Holds one GameSession and the WebSocket connections attached to it."""
+    """Lobby: login + matchmaking. Creates one Match per matched pair."""
 
-    def __init__(self, board_text: str = DEFAULT_BOARD_TEXT, db_path: str = db.DEFAULT_DB_PATH):
-        board = Board.from_text_lines(board_text.strip().split("\n"))
-        self.bus = EventBus()
-        self.session = GameSession(board, self.bus)
-        self.game_state = GameState()
-        self.clients: dict = {}  # websocket -> role ('w' / 'b' / 'observer')
-        self.usernames: dict = {}  # websocket -> username
+    def __init__(self, db_path: str = db.DEFAULT_DB_PATH):
         self.db_conn = db.init_db(db_path)
-        self._start_time = time.monotonic()
-
-        # Bus handlers are synchronous; bridge them to the async broadcast
-        # via a queue so score/move-log/game-over updates are what actually
-        # drives broadcasts, instead of an unconditional per-tick broadcast.
-        self._broadcast_queue: asyncio.Queue = asyncio.Queue()
-        for event_type in ("move_logged", "score_changed", "game_over"):
-            self.bus.subscribe(event_type, self._make_bus_handler(event_type))
-
-    def _make_bus_handler(self, event_type: str):
-        def handler(payload: dict) -> None:
-            self._broadcast_queue.put_nowait((event_type, payload))
-        return handler
-
-    def _now_ms(self) -> int:
-        return int((time.monotonic() - self._start_time) * 1000)
-
-    def _assign_role(self) -> str:
-        colors_taken = {role for role in self.clients.values() if role in ("w", "b")}
-        if "w" not in colors_taken:
-            return "w"
-        if "b" not in colors_taken:
-            return "b"
-        return "observer"
+        self.matchmaker = Matchmaker()
+        self._pending_matches: dict[tuple[str, str], Match] = {}
+        self._match_lock = asyncio.Lock()
 
     async def handle_client(self, websocket) -> None:
+        username = await self._login(websocket)
+        if username is None:
+            return
+
+        if not await self._wait_for_play(websocket):
+            return
+
+        await self._enter_matchmaking(websocket, username)
+
+    async def _login(self, websocket) -> str | None:
         try:
             credentials = (await websocket.recv()).strip()
         except websockets.exceptions.ConnectionClosed:
-            return
+            return None
 
         parts = credentials.split(maxsplit=2)
         if len(parts) != 3 or parts[0] != "login":
             await websocket.send("error: expected 'login <username> <password>'")
             await websocket.close()
-            return
+            return None
 
         _, username, password = parts
         if not db.authenticate_or_register(self.db_conn, username, password):
             await websocket.send("error: bad credentials")
             await websocket.close()
-            return
+            return None
 
-        role = self._assign_role()
-        if role == "w":
-            self.game_state.white_name = username
-        elif role == "b":
-            self.game_state.black_name = username
+        logger.info("client '%s' logged in", username)
+        await websocket.send("logged_in: type 'play' to start matchmaking")
+        return username
 
-        self.usernames[websocket] = username
-        if role != "observer":
-            await self._notify_others(f"player_joined: {role} ({username})")
-        self.clients[websocket] = role
-        logger.info("client '%s' connected as %s (total=%d)", username, role, len(self.clients))
-        await websocket.send(f"role: {role}")
-        await self._broadcast_state()
+    async def _wait_for_play(self, websocket) -> bool:
         try:
             async for message in websocket:
-                logger.info("received from %s '%s': %r", role, username, message)
-                await self._handle_command(websocket, role, message)
-        finally:
-            del self.clients[websocket]
-            del self.usernames[websocket]
-            logger.info("client '%s' (%s) disconnected (total=%d)", username, role, len(self.clients))
+                if message.strip() == "play":
+                    return True
+                await websocket.send("error: expected 'play'")
+        except websockets.exceptions.ConnectionClosed:
+            pass
+        return False
 
-    async def _handle_command(self, websocket, role: str, message: str) -> None:
-        parts = message.strip().split()
-        if not parts:
-            return
+    async def _enter_matchmaking(self, websocket, username: str) -> None:
+        elo_rating = db.get_elo(self.db_conn, username)
+        await websocket.send("searching_for_opponent")
+        logger.info("client '%s' (elo %d) entered matchmaking", username, elo_rating)
 
-        if role == "observer":
-            await websocket.send("error: observers cannot move")
-            return
-
-        if role != self.game_state.current_turn:
-            await websocket.send("error: not your turn")
-            return
-
-        now_ms = self._now_ms()
         try:
-            if parts[0] == "move" and len(parts) == 3:
-                from_row, from_col = algebraic_to_cell(parts[1], self.session.engine.board.rows)
-                to_row, to_col = algebraic_to_cell(parts[2], self.session.engine.board.rows)
-                accepted = self.session.request_move(
-                    from_row, from_col, to_row, to_col, now_ms, self.game_state.current_turn
-                )
-            elif parts[0] == "jump" and len(parts) == 2:
-                row, col = algebraic_to_cell(parts[1], self.session.engine.board.rows)
-                accepted = self.session.request_jump(row, col, now_ms, self.game_state.current_turn)
+            opponent_username, _opponent_elo = await self.matchmaker.find_match(username, elo_rating)
+        except NoOpponentFound:
+            await websocket.send("error: cannot find opponent")
+            await websocket.close()
+            return
+
+        white_username, black_username = sorted((username, opponent_username))
+        match = await self._get_or_create_match(white_username, black_username)
+        role = "w" if username == white_username else "b"
+        logger.info("client '%s' matched with '%s' as %s", username, opponent_username, role)
+        await match.join(websocket, role)
+
+    async def _get_or_create_match(self, white_username: str, black_username: str) -> Match:
+        """Both matched players independently compute the same (white, black)
+        key and arrive here separately -- the first to arrive creates the
+        Match, the second finds it waiting and consumes the pending entry."""
+        key = (white_username, black_username)
+        async with self._match_lock:
+            match = self._pending_matches.get(key)
+            if match is None:
+                match = Match(white_username, black_username, self.db_conn)
+                match.start()
+                self._pending_matches[key] = match
             else:
-                await websocket.send(f"error: unknown command {message!r}")
-                return
-        except ValueError as exc:
-            await websocket.send(f"error: {exc}")
-            return
-
-        if not accepted:
-            await websocket.send("error: illegal move")
-            return
-
-        self.game_state.switch_turn()
-        await self._broadcast_state()
-
-    async def _broadcast_state(self) -> None:
-        text = self._format_snapshot(self.session.snapshot(self._now_ms()))
-        logger.info("broadcasting state to %d client(s)", len(self.clients))
-        for ws in list(self.clients):
-            await ws.send(text)
-
-    async def _notify_others(self, text: str) -> None:
-        logger.info("notifying %d existing client(s): %s", len(self.clients), text)
-        for ws in list(self.clients):
-            await ws.send(text)
-
-    def _format_snapshot(self, snapshot: dict) -> str:
-        white_elo = db.get_elo(self.db_conn, self.game_state.white_name)
-        black_elo = db.get_elo(self.db_conn, self.game_state.black_name)
-        lines = [
-            "board:",
-            snapshot["board"],
-            f"players: w:{self.game_state.white_name} b:{self.game_state.black_name}",
-            f"elo: w:{white_elo} b:{black_elo}",
-            f"score: w:{snapshot['score']['w']} b:{snapshot['score']['b']}",
-            f"turn: {self.game_state.current_turn}",
-            f"game_over: {'true' if snapshot['game_over'] else 'false'}",
-        ]
-        return "\n".join(lines)
-
-    def _apply_elo_update(self) -> None:
-        winner = self.session.engine.winner()
-        if winner is None:
-            return
-        white_elo = db.get_elo(self.db_conn, self.game_state.white_name)
-        black_elo = db.get_elo(self.db_conn, self.game_state.black_name)
-        new_white, new_black = elo.compute_new_ratings(white_elo, black_elo, winner)
-        db.update_elo(self.db_conn, self.game_state.white_name, new_white)
-        db.update_elo(self.db_conn, self.game_state.black_name, new_black)
-        logger.info(
-            "elo updated: w:%d->%d b:%d->%d", white_elo, new_white, black_elo, new_black
-        )
-
-    async def tick_loop(self) -> None:
-        while True:
-            await asyncio.sleep(TICK_INTERVAL_S)
-            self.session.tick(self._now_ms())
-
-    async def dispatch_broadcasts(self) -> None:
-        """Broadcasts driven by the bus: fires when GameSession actually
-        publishes move_logged/score_changed/game_over, not on a blind timer."""
-        while True:
-            event_type, _payload = await self._broadcast_queue.get()
-            logger.info("bus event %s -> broadcasting state", event_type)
-            if event_type == "game_over":
-                self._apply_elo_update()
-            await self._broadcast_state()
+                del self._pending_matches[key]
+        return match
 
 
 async def run_server(host: str = "localhost", port: int = 8765) -> None:
     server = GameServer()
-    asyncio.create_task(server.tick_loop())
-    asyncio.create_task(server.dispatch_broadcasts())
     async with websockets.serve(server.handle_client, host, port):
         logger.info("server listening on %s:%d", host, port)
         await asyncio.Future()  # run forever

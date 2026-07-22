@@ -36,7 +36,7 @@ async def run_client(host: str = "localhost", port: int = 8765) -> None:
         username = input("Username: ").strip() or "anonymous"
         password = input("Password: ").strip()
         await websocket.send(f"login {username} {password}")
-        print(f"Connected to {uri} as {username!r}. Type commands like 'move e2 e4' or 'jump e4'.")
+        print(f"Connected to {uri} as {username!r}.")
         receive_task = asyncio.create_task(_receive_loop(websocket))
         send_task = asyncio.create_task(_send_loop(websocket))
         done, pending = await asyncio.wait(
