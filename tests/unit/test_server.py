@@ -6,6 +6,7 @@ import websockets
 
 from protocol import codec
 from protocol.messages import (
+    AuthError,
     ErrorMessage,
     LoggedIn,
     LoginRequest,
@@ -15,7 +16,13 @@ from protocol.messages import (
     SearchingForOpponent,
 )
 from server import db, matchmaking
-from server.server import GameServer
+from server.server import (
+    AUTH_EXPECTED_LOGIN,
+    AUTH_INVALID_CREDENTIALS,
+    FLOW_EXPECTED_PLAY,
+    FLOW_NO_OPPONENT_FOUND,
+    GameServer,
+)
 
 
 class GameServerTests(unittest.IsolatedAsyncioTestCase):
@@ -45,7 +52,7 @@ class GameServerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(websockets.exceptions.ConnectionClosed):
                 await ws.recv()
 
-        self.assertEqual(reply, ErrorMessage("expected login"))
+        self.assertEqual(reply, AuthError(AUTH_EXPECTED_LOGIN))
 
     async def test_wrong_password_is_rejected_and_closes_the_connection(self):
         _, uri = await self._start_server()
@@ -61,7 +68,7 @@ class GameServerTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(websockets.exceptions.ConnectionClosed):
                 await ws2.recv()
 
-        self.assertEqual(reply, ErrorMessage("bad credentials"))
+        self.assertEqual(reply, AuthError(AUTH_INVALID_CREDENTIALS))
 
     async def test_command_before_play_is_rejected_but_connection_stays_open(self):
         _, uri = await self._start_server()
@@ -78,9 +85,9 @@ class GameServerTests(unittest.IsolatedAsyncioTestCase):
                 searching_reply = codec.decode(await ws.recv())
                 timeout_reply = codec.decode(await asyncio.wait_for(ws.recv(), timeout=2))
 
-        self.assertEqual(error_reply, ErrorMessage("expected play"))
+        self.assertEqual(error_reply, ErrorMessage(FLOW_EXPECTED_PLAY))
         self.assertEqual(searching_reply, SearchingForOpponent())
-        self.assertEqual(timeout_reply, ErrorMessage("cannot find opponent"))
+        self.assertEqual(timeout_reply, ErrorMessage(FLOW_NO_OPPONENT_FOUND))
 
     async def test_two_players_within_elo_range_are_matched_and_receive_roles(self):
         _, uri = await self._start_server()
@@ -116,7 +123,7 @@ class GameServerTests(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(websockets.exceptions.ConnectionClosed):
                     await ws.recv()
 
-        self.assertEqual(reply, ErrorMessage("cannot find opponent"))
+        self.assertEqual(reply, ErrorMessage(FLOW_NO_OPPONENT_FOUND))
 
     async def test_players_far_apart_in_elo_are_not_matched(self):
         server, uri = await self._start_server()
@@ -138,8 +145,8 @@ class GameServerTests(unittest.IsolatedAsyncioTestCase):
                 reply1 = codec.decode(await asyncio.wait_for(ws1.recv(), timeout=2))
                 reply2 = codec.decode(await asyncio.wait_for(ws2.recv(), timeout=2))
 
-        self.assertEqual(reply1, ErrorMessage("cannot find opponent"))
-        self.assertEqual(reply2, ErrorMessage("cannot find opponent"))
+        self.assertEqual(reply1, ErrorMessage(FLOW_NO_OPPONENT_FOUND))
+        self.assertEqual(reply2, ErrorMessage(FLOW_NO_OPPONENT_FOUND))
 
 
 if __name__ == '__main__':

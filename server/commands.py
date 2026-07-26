@@ -12,7 +12,9 @@ from __future__ import annotations
 from typing import Callable
 
 from kungfu_chess.rules.algebraic import algebraic_to_cell
-from protocol.messages import ErrorMessage, JumpCommand, MoveCommand
+from protocol.messages import ErrorMessage, JumpCommand, MoveCommand, MoveRejected
+
+MOVE_ERROR_ILLEGAL = "ILLEGAL_MOVE"
 
 COMMAND_HANDLERS: dict[type, Callable] = {}
 
@@ -32,29 +34,29 @@ def dispatch(match, role: str, command: object, now_ms: int) -> ErrorMessage | N
 
 
 @register(MoveCommand)
-def _handle_move(match, role: str, command: MoveCommand, now_ms: int) -> ErrorMessage | None:
+def _handle_move(match, role: str, command: MoveCommand, now_ms: int) -> MoveRejected | None:
     rows = match.session.engine.board.rows
     try:
         from_row, from_col = algebraic_to_cell(command.from_square, rows)
         to_row, to_col = algebraic_to_cell(command.to_square, rows)
     except ValueError as exc:
-        return ErrorMessage(str(exc))
+        return MoveRejected(str(exc))
 
     accepted = match.session.request_move(from_row, from_col, to_row, to_col, now_ms, role)
     if not accepted:
-        return ErrorMessage("illegal move")
+        return MoveRejected(MOVE_ERROR_ILLEGAL)
     return None
 
 
 @register(JumpCommand)
-def _handle_jump(match, role: str, command: JumpCommand, now_ms: int) -> ErrorMessage | None:
+def _handle_jump(match, role: str, command: JumpCommand, now_ms: int) -> MoveRejected | None:
     rows = match.session.engine.board.rows
     try:
         row, col = algebraic_to_cell(command.square, rows)
     except ValueError as exc:
-        return ErrorMessage(str(exc))
+        return MoveRejected(str(exc))
 
     accepted = match.session.request_jump(row, col, now_ms, role)
     if not accepted:
-        return ErrorMessage("illegal move")
+        return MoveRejected(MOVE_ERROR_ILLEGAL)
     return None

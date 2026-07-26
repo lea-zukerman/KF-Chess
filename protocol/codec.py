@@ -24,6 +24,8 @@ _MESSAGE_CLASSES = (
     messages.StateUpdate,
     messages.ResignCountdown,
     messages.ErrorMessage,
+    messages.AuthError,
+    messages.MoveRejected,
 )
 
 MESSAGE_TYPES: dict[str, type] = {cls.type: cls for cls in _MESSAGE_CLASSES}

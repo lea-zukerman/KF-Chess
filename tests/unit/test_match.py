@@ -5,11 +5,11 @@ from unittest import mock
 import websockets
 
 from protocol import codec
-from protocol.messages import ErrorMessage, MoveCommand, PlayerJoined, ResignCountdown, RoleAssigned, StateUpdate
+from protocol.messages import ErrorMessage, MoveCommand, MoveRejected, PlayerJoined, ResignCountdown, RoleAssigned, StateUpdate
 from server import db
 from server import match as match_module
 from server.connection import Connection
-from server.match import Match
+from server.match import MOVE_ERROR_OBSERVER, MOVE_ERROR_WRONG_TURN, Match
 
 
 class MatchTests(unittest.IsolatedAsyncioTestCase):
@@ -75,7 +75,7 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
             await ws3.send(codec.encode(MoveCommand("e2", "e4")))
             reply = codec.decode(await ws3.recv())
 
-        self.assertEqual(reply, ErrorMessage("observers cannot move"))
+        self.assertEqual(reply, MoveRejected(MOVE_ERROR_OBSERVER))
 
     async def test_black_cannot_move_before_white(self):
         uri = await self._start_match()
@@ -89,7 +89,7 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
             await ws2.send(codec.encode(MoveCommand("e7", "e5")))
             reply = codec.decode(await ws2.recv())
 
-        self.assertEqual(reply, ErrorMessage("not your turn"))
+        self.assertEqual(reply, MoveRejected(MOVE_ERROR_WRONG_TURN))
 
     async def test_malformed_command_replies_with_error_and_connection_stays_usable(self):
         uri = await self._start_match()

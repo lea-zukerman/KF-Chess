@@ -88,3 +88,15 @@ class ResignCountdown:
 class ErrorMessage:
     type: ClassVar[str] = "error"
     message: str
+
+
+@dataclass(frozen=True)
+class AuthError:
+    type: ClassVar[str] = "auth_error"
+    reason: str
+
+
+@dataclass(frozen=True)
+class MoveRejected:
+    type: ClassVar[str] = "move_rejected"
+    reason: str

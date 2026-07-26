@@ -16,7 +16,7 @@ from kungfu_chess.model.game_state import GameState
 from kungfu_chess.bus.event_bus import EventBus
 from kungfu_chess.app.game_session import GameSession
 
-from protocol.messages import ErrorMessage, PlayerJoined, ResignCountdown, RoleAssigned, StateUpdate
+from protocol.messages import MoveRejected, PlayerJoined, ResignCountdown, RoleAssigned, StateUpdate
 
 from . import commands, db, elo
 from .connection import Connection, ConnectionClosed
@@ -31,6 +31,9 @@ bP bP bP bP bP bP bP bP
 .  .  .  .  .  .  .  .
 wP wP wP wP wP wP wP wP
 wR wN wB wQ wK wB wN wR"""
+
+MOVE_ERROR_OBSERVER = "OBSERVER_CANNOT_MOVE"
+MOVE_ERROR_WRONG_TURN = "NOT_YOUR_TURN"
 
 TICK_INTERVAL_S = 0.1
 DISCONNECT_RESIGN_SECONDS = 20
@@ -127,21 +130,23 @@ class Match:
         # dispatch_broadcasts) -- doing it here too would double-apply it.
 
     async def _handle_message(self, connection: Connection, role: str, message: object) -> None:
-        if role == "observer":
-            await connection.send(ErrorMessage("observers cannot move"))
-            return
-
-        if role != self.game_state.current_turn:
-            await connection.send(ErrorMessage("not your turn"))
-            return
-
-        error = commands.dispatch(self, role, message, self.now_ms())
+        error = self._authorize(role) or commands.dispatch(self, role, message, self.now_ms())
         if error is not None:
             await connection.send(error)
             return
 
         self.game_state.switch_turn()
         await self._broadcast_state()
+
+    def _authorize(self, role: str) -> MoveRejected | None:
+        checks = [
+            (role == "observer", MOVE_ERROR_OBSERVER),
+            (role != self.game_state.current_turn, MOVE_ERROR_WRONG_TURN),
+        ]
+        for is_blocked, reason in checks:
+            if is_blocked:
+                return MoveRejected(reason)
+        return None
 
     async def _broadcast_state(self) -> None:
         message = self._state_update()

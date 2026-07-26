@@ -8,7 +8,7 @@ import logging
 
 import websockets
 
-from protocol.messages import ErrorMessage, LoggedIn, LoginRequest, PlayRequest, SearchingForOpponent
+from protocol.messages import AuthError, ErrorMessage, LoggedIn, LoginRequest, PlayRequest, SearchingForOpponent
 
 from . import db
 from .connection import Connection, ConnectionClosed
@@ -16,6 +16,11 @@ from .match import Match
 from .matchmaking import Matchmaker, NoOpponentFound
 
 logger = logging.getLogger(__name__)
+
+AUTH_EXPECTED_LOGIN = "EXPECTED_LOGIN"
+AUTH_INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
+FLOW_EXPECTED_PLAY = "EXPECTED_PLAY"
+FLOW_NO_OPPONENT_FOUND = "NO_OPPONENT_FOUND"
 
 
 class GameServer:
@@ -45,12 +50,12 @@ class GameServer:
             return None
 
         if not isinstance(message, LoginRequest):
-            await connection.send(ErrorMessage("expected login"))
+            await connection.send(AuthError(AUTH_EXPECTED_LOGIN))
             await connection.close()
             return None
 
         if not db.authenticate_or_register(self.db_conn, message.username, message.password):
-            await connection.send(ErrorMessage("bad credentials"))
+            await connection.send(AuthError(AUTH_INVALID_CREDENTIALS))
             await connection.close()
             return None
 
@@ -63,7 +68,7 @@ class GameServer:
             async for message in connection:
                 if isinstance(message, PlayRequest):
                     return True
-                await connection.send(ErrorMessage("expected play"))
+                await connection.send(ErrorMessage(FLOW_EXPECTED_PLAY))
         except ConnectionClosed:
             pass
         return False
@@ -76,7 +81,7 @@ class GameServer:
         try:
             opponent_username, _opponent_elo = await self.matchmaker.find_match(username, elo_rating)
         except NoOpponentFound:
-            await connection.send(ErrorMessage("cannot find opponent"))
+            await connection.send(ErrorMessage(FLOW_NO_OPPONENT_FOUND))
             await connection.close()
             return
 
