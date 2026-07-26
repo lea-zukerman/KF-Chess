@@ -4,8 +4,11 @@ from unittest import mock
 
 import websockets
 
+from protocol import codec
+from protocol.messages import ErrorMessage, MoveCommand, PlayerJoined, ResignCountdown, RoleAssigned, StateUpdate
 from server import db
 from server import match as match_module
+from server.connection import Connection
 from server.match import Match
 
 
@@ -26,7 +29,7 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
 
         async def handler(websocket):
             role = next(roles)
-            await self.match.join(websocket, role)
+            await self.match.join(Connection(websocket), role)
 
         ws_server = await websockets.serve(handler, "localhost", 0)
         self.addAsyncCleanup(ws_server.close)
@@ -37,12 +40,12 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
         uri = await self._start_match()
 
         async with websockets.connect(uri) as ws1:
-            role1 = await ws1.recv()
+            role1 = codec.decode(await ws1.recv())
             async with websockets.connect(uri) as ws2:
-                role2 = await ws2.recv()
+                role2 = codec.decode(await ws2.recv())
 
-        self.assertEqual(role1, "role: w")
-        self.assertEqual(role2, "role: b")
+        self.assertEqual(role1, RoleAssigned("w"))
+        self.assertEqual(role2, RoleAssigned("b"))
 
     async def test_existing_player_is_notified_when_the_other_joins(self):
         uri = await self._start_match()
@@ -54,9 +57,9 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
             async with websockets.connect(uri) as ws2:
                 await ws2.recv()  # role
 
-                notification = await ws1.recv()
+                notification = codec.decode(await ws1.recv())
 
-        self.assertEqual(notification, "player_joined: b (Bob)")
+        self.assertEqual(notification, PlayerJoined("b", "Bob"))
 
     async def test_third_connection_is_observer_and_cannot_move(self):
         uri = await self._start_match()
@@ -66,13 +69,13 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
                 websockets.connect(uri) as ws3:
             await ws1.recv()  # role
             await ws2.recv()  # role
-            self.assertEqual(await ws3.recv(), "role: observer")
+            self.assertEqual(codec.decode(await ws3.recv()), RoleAssigned("observer"))
             await ws3.recv()  # initial state broadcast
 
-            await ws3.send("move e2 e4")
-            reply = await ws3.recv()
+            await ws3.send(codec.encode(MoveCommand("e2", "e4")))
+            reply = codec.decode(await ws3.recv())
 
-        self.assertEqual(reply, "error: observers cannot move")
+        self.assertEqual(reply, ErrorMessage("observers cannot move"))
 
     async def test_black_cannot_move_before_white(self):
         uri = await self._start_match()
@@ -83,10 +86,10 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
             await ws2.recv()  # role
             await ws2.recv()  # initial state
 
-            await ws2.send("move e7 e5")
-            reply = await ws2.recv()
+            await ws2.send(codec.encode(MoveCommand("e7", "e5")))
+            reply = codec.decode(await ws2.recv())
 
-        self.assertEqual(reply, "error: not your turn")
+        self.assertEqual(reply, ErrorMessage("not your turn"))
 
     async def test_malformed_command_replies_with_error_and_connection_stays_usable(self):
         uri = await self._start_match()
@@ -95,14 +98,14 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
             await ws1.recv()  # role
             await ws1.recv()  # initial state
 
-            await ws1.send("teleport a1 h8")
-            error_reply = await ws1.recv()
+            await ws1.send("not valid json")
+            error_reply = codec.decode(await ws1.recv())
 
-            await ws1.send("move e2 e4")
-            move_reply = await ws1.recv()
+            await ws1.send(codec.encode(MoveCommand("e2", "e4")))
+            move_reply = codec.decode(await ws1.recv())
 
-        self.assertTrue(error_reply.startswith("error:"))
-        self.assertTrue(move_reply.startswith("board:"))
+        self.assertIsInstance(error_reply, ErrorMessage)
+        self.assertIsInstance(move_reply, StateUpdate)
 
     async def test_elo_changes_after_a_game_ends(self):
         uri = await self._start_match(board_text="bK .\nwR .")
@@ -116,18 +119,18 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
             await ws1.recv()  # player_joined notification
             await ws1.recv()  # broadcast after black joined
 
-            await ws1.send("move a1 a2")
+            await ws1.send(codec.encode(MoveCommand("a1", "a2")))
             await ws1.recv()  # move accepted, piece still traveling
 
             final_state = None
             for _ in range(10):
-                message = await asyncio.wait_for(ws1.recv(), timeout=2)
-                if "game_over: true" in message and "elo: w:1200 b:1200" not in message:
+                message = codec.decode(await asyncio.wait_for(ws1.recv(), timeout=2))
+                if isinstance(message, StateUpdate) and message.game_over \
+                        and (message.white_elo, message.black_elo) != (1200, 1200):
                     final_state = message
                     break
 
         self.assertIsNotNone(final_state)
-        self.assertNotIn("elo: w:1200 b:1200", final_state)
 
     async def test_disconnect_during_a_game_triggers_countdown_then_auto_resigns(self):
         uri = await self._start_match()
@@ -145,14 +148,15 @@ class MatchTests(unittest.IsolatedAsyncioTestCase):
 
                 await ws1.close()  # white disconnects mid-game
 
-                countdown_2 = await asyncio.wait_for(ws2.recv(), timeout=2)
-                countdown_1 = await asyncio.wait_for(ws2.recv(), timeout=2)
-                final_state = await asyncio.wait_for(ws2.recv(), timeout=2)
+                countdown_2 = codec.decode(await asyncio.wait_for(ws2.recv(), timeout=2))
+                countdown_1 = codec.decode(await asyncio.wait_for(ws2.recv(), timeout=2))
+                final_state = codec.decode(await asyncio.wait_for(ws2.recv(), timeout=2))
 
-        self.assertEqual(countdown_2, "resign_countdown: 2")
-        self.assertEqual(countdown_1, "resign_countdown: 1")
-        self.assertIn("game_over: true", final_state)
-        self.assertIn("elo: w:1184 b:1216", final_state)
+        self.assertEqual(countdown_2, ResignCountdown(2))
+        self.assertEqual(countdown_1, ResignCountdown(1))
+        self.assertIsInstance(final_state, StateUpdate)
+        self.assertTrue(final_state.game_over)
+        self.assertEqual((final_state.white_elo, final_state.black_elo), (1184, 1216))
         self.assertEqual(db.get_elo(self.db_conn, "Alice"), 1184)
         self.assertEqual(db.get_elo(self.db_conn, "Bob"), 1216)
 

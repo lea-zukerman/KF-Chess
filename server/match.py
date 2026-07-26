@@ -1,26 +1,25 @@
 """Match: one in-progress game between two matched players.
 
-Extracted from what used to be GameServer's per-process state, so that
-multiple games can run concurrently once matchmaking hands out pairs.
-GameServer (the lobby) creates one Match per pair and hands each player's
-websocket off to it; Match owns the bus, GameSession, connection tracking,
-tick loop, broadcast dispatch, ELO update, and disconnect/auto-resign
-handling for that one game.
+Owns the bus, GameSession, connection tracking, tick loop, broadcast
+dispatch, ELO update, and disconnect/auto-resign handling for one game.
+Talks to the network only through server.connection.Connection (protocol
+message objects in/out) and to game rules only through kungfu_chess -- it
+never touches a raw websocket, JSON, or chess rule logic directly.
 """
 
 import asyncio
 import logging
 import time
 
-import websockets
-
 from kungfu_chess.model.board import Board
 from kungfu_chess.model.game_state import GameState
 from kungfu_chess.bus.event_bus import EventBus
 from kungfu_chess.app.game_session import GameSession
-from kungfu_chess.rules.algebraic import algebraic_to_cell
 
-from . import db, elo
+from protocol.messages import ErrorMessage, PlayerJoined, ResignCountdown, RoleAssigned, StateUpdate
+
+from . import commands, db, elo
+from .connection import Connection, ConnectionClosed
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +40,8 @@ class Match:
     """Holds one GameSession and the connections attached to it.
 
     white_username/black_username are already decided by the caller
-    (matchmaking) before a Match is created -- unlike the old single-game
-    GameServer, Match never assigns roles itself.
+    (matchmaking) before a Match is created -- Match never assigns roles
+    itself.
     """
 
     def __init__(self, white_username: str, black_username: str, db_conn, board_text: str = DEFAULT_BOARD_TEXT):
@@ -53,7 +52,7 @@ class Match:
         self.game_state.white_name = white_username
         self.game_state.black_name = black_username
         self.db_conn = db_conn
-        self.clients: dict = {}  # websocket -> role ('w' / 'b' / 'observer')
+        self.clients: dict[Connection, str] = {}  # Connection -> role ('w' / 'b' / 'observer')
         self._start_time = time.monotonic()
         self._tick_task = None
         self._dispatch_task = None
@@ -67,7 +66,7 @@ class Match:
             self._broadcast_queue.put_nowait((event_type, payload))
         return handler
 
-    def _now_ms(self) -> int:
+    def now_ms(self) -> int:
         return int((time.monotonic() - self._start_time) * 1000)
 
     def start(self) -> None:
@@ -80,7 +79,7 @@ class Match:
         if self._dispatch_task is not None:
             self._dispatch_task.cancel()
 
-    async def join(self, websocket, role: str) -> None:
+    async def join(self, connection: Connection, role: str) -> None:
         """Attach an already-authenticated connection to this match.
 
         role is 'w', 'b', or 'observer', decided by the caller before this
@@ -90,20 +89,20 @@ class Match:
             self.game_state.black_name if role == "b" else None
 
         if role != "observer":
-            await self._notify_others(f"player_joined: {role} ({username})")
-        self.clients[websocket] = role
+            await self._notify_others(PlayerJoined(role, username))
+        self.clients[connection] = role
         logger.info("client '%s' joined match as %s (total=%d)", username, role, len(self.clients))
-        await websocket.send(f"role: {role}")
+        await connection.send(RoleAssigned(role))
         await self._broadcast_state()
 
         try:
-            async for message in websocket:
+            async for message in connection:
                 logger.info("received from %s '%s': %r", role, username, message)
-                await self._handle_command(websocket, role, message)
-        except websockets.exceptions.ConnectionClosed:
+                await self._handle_message(connection, role, message)
+        except ConnectionClosed:
             pass
         finally:
-            del self.clients[websocket]
+            del self.clients[connection]
             logger.info("client '%s' (%s) left match (total=%d)", username, role, len(self.clients))
             if role in ("w", "b"):
                 await self._handle_disconnect(role)
@@ -114,7 +113,7 @@ class Match:
 
         winner = "b" if role == "w" else "w"
         for remaining in range(DISCONNECT_RESIGN_SECONDS, 0, -1):
-            await self._notify_others(f"resign_countdown: {remaining}")
+            await self._notify_others(ResignCountdown(remaining))
             await asyncio.sleep(1)
 
         if self.session.engine.is_game_over():
@@ -127,68 +126,49 @@ class Match:
         # through the same bus path king-capture already uses (see
         # dispatch_broadcasts) -- doing it here too would double-apply it.
 
-    async def _handle_command(self, websocket, role: str, message: str) -> None:
-        parts = message.strip().split()
-        if not parts:
-            return
-
+    async def _handle_message(self, connection: Connection, role: str, message: object) -> None:
         if role == "observer":
-            await websocket.send("error: observers cannot move")
+            await connection.send(ErrorMessage("observers cannot move"))
             return
 
         if role != self.game_state.current_turn:
-            await websocket.send("error: not your turn")
+            await connection.send(ErrorMessage("not your turn"))
             return
 
-        now_ms = self._now_ms()
-        try:
-            if parts[0] == "move" and len(parts) == 3:
-                from_row, from_col = algebraic_to_cell(parts[1], self.session.engine.board.rows)
-                to_row, to_col = algebraic_to_cell(parts[2], self.session.engine.board.rows)
-                accepted = self.session.request_move(
-                    from_row, from_col, to_row, to_col, now_ms, self.game_state.current_turn
-                )
-            elif parts[0] == "jump" and len(parts) == 2:
-                row, col = algebraic_to_cell(parts[1], self.session.engine.board.rows)
-                accepted = self.session.request_jump(row, col, now_ms, self.game_state.current_turn)
-            else:
-                await websocket.send(f"error: unknown command {message!r}")
-                return
-        except ValueError as exc:
-            await websocket.send(f"error: {exc}")
-            return
-
-        if not accepted:
-            await websocket.send("error: illegal move")
+        error = commands.dispatch(self, role, message, self.now_ms())
+        if error is not None:
+            await connection.send(error)
             return
 
         self.game_state.switch_turn()
         await self._broadcast_state()
 
     async def _broadcast_state(self) -> None:
-        text = self._format_snapshot(self.session.snapshot(self._now_ms()))
+        message = self._state_update()
         logger.info("broadcasting state to %d client(s)", len(self.clients))
-        for ws in list(self.clients):
-            await ws.send(text)
+        for connection in list(self.clients):
+            await connection.send(message)
 
-    async def _notify_others(self, text: str) -> None:
-        logger.info("notifying %d existing client(s): %s", len(self.clients), text)
-        for ws in list(self.clients):
-            await ws.send(text)
+    async def _notify_others(self, message: object) -> None:
+        logger.info("notifying %d existing client(s): %s", len(self.clients), message)
+        for connection in list(self.clients):
+            await connection.send(message)
 
-    def _format_snapshot(self, snapshot: dict) -> str:
+    def _state_update(self) -> StateUpdate:
+        snapshot = self.session.snapshot(self.now_ms())
         white_elo = db.get_elo(self.db_conn, self.game_state.white_name)
         black_elo = db.get_elo(self.db_conn, self.game_state.black_name)
-        lines = [
-            "board:",
-            snapshot["board"],
-            f"players: w:{self.game_state.white_name} b:{self.game_state.black_name}",
-            f"elo: w:{white_elo} b:{black_elo}",
-            f"score: w:{snapshot['score']['w']} b:{snapshot['score']['b']}",
-            f"turn: {self.game_state.current_turn}",
-            f"game_over: {'true' if snapshot['game_over'] else 'false'}",
-        ]
-        return "\n".join(lines)
+        return StateUpdate(
+            board=snapshot["board"],
+            white_name=self.game_state.white_name,
+            black_name=self.game_state.black_name,
+            white_elo=white_elo,
+            black_elo=black_elo,
+            score_w=snapshot["score"]["w"],
+            score_b=snapshot["score"]["b"],
+            turn=self.game_state.current_turn,
+            game_over=snapshot["game_over"],
+        )
 
     def _apply_elo_update(self) -> None:
         winner = self.session.engine.winner()
@@ -206,7 +186,7 @@ class Match:
     async def tick_loop(self) -> None:
         while True:
             await asyncio.sleep(TICK_INTERVAL_S)
-            self.session.tick(self._now_ms())
+            self.session.tick(self.now_ms())
 
     async def dispatch_broadcasts(self) -> None:
         """Broadcasts driven by the bus: fires when GameSession actually

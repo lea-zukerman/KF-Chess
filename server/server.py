@@ -8,9 +8,12 @@ import logging
 
 import websockets
 
+from protocol.messages import ErrorMessage, LoggedIn, LoginRequest, PlayRequest, SearchingForOpponent
+
 from . import db
-from .matchmaking import Matchmaker, NoOpponentFound
+from .connection import Connection, ConnectionClosed
 from .match import Match
+from .matchmaking import Matchmaker, NoOpponentFound
 
 logger = logging.getLogger(__name__)
 
@@ -25,64 +28,63 @@ class GameServer:
         self._match_lock = asyncio.Lock()
 
     async def handle_client(self, websocket) -> None:
-        username = await self._login(websocket)
+        connection = Connection(websocket)
+        username = await self._login(connection)
         if username is None:
             return
 
-        if not await self._wait_for_play(websocket):
+        if not await self._wait_for_play(connection):
             return
 
-        await self._enter_matchmaking(websocket, username)
+        await self._enter_matchmaking(connection, username)
 
-    async def _login(self, websocket) -> str | None:
+    async def _login(self, connection: Connection) -> str | None:
         try:
-            credentials = (await websocket.recv()).strip()
-        except websockets.exceptions.ConnectionClosed:
+            message = await connection.receive()
+        except ConnectionClosed:
             return None
 
-        parts = credentials.split(maxsplit=2)
-        if len(parts) != 3 or parts[0] != "login":
-            await websocket.send("error: expected 'login <username> <password>'")
-            await websocket.close()
+        if not isinstance(message, LoginRequest):
+            await connection.send(ErrorMessage("expected login"))
+            await connection.close()
             return None
 
-        _, username, password = parts
-        if not db.authenticate_or_register(self.db_conn, username, password):
-            await websocket.send("error: bad credentials")
-            await websocket.close()
+        if not db.authenticate_or_register(self.db_conn, message.username, message.password):
+            await connection.send(ErrorMessage("bad credentials"))
+            await connection.close()
             return None
 
-        logger.info("client '%s' logged in", username)
-        await websocket.send("logged_in: type 'play' to start matchmaking")
-        return username
+        logger.info("client '%s' logged in", message.username)
+        await connection.send(LoggedIn())
+        return message.username
 
-    async def _wait_for_play(self, websocket) -> bool:
+    async def _wait_for_play(self, connection: Connection) -> bool:
         try:
-            async for message in websocket:
-                if message.strip() == "play":
+            async for message in connection:
+                if isinstance(message, PlayRequest):
                     return True
-                await websocket.send("error: expected 'play'")
-        except websockets.exceptions.ConnectionClosed:
+                await connection.send(ErrorMessage("expected play"))
+        except ConnectionClosed:
             pass
         return False
 
-    async def _enter_matchmaking(self, websocket, username: str) -> None:
+    async def _enter_matchmaking(self, connection: Connection, username: str) -> None:
         elo_rating = db.get_elo(self.db_conn, username)
-        await websocket.send("searching_for_opponent")
+        await connection.send(SearchingForOpponent())
         logger.info("client '%s' (elo %d) entered matchmaking", username, elo_rating)
 
         try:
             opponent_username, _opponent_elo = await self.matchmaker.find_match(username, elo_rating)
         except NoOpponentFound:
-            await websocket.send("error: cannot find opponent")
-            await websocket.close()
+            await connection.send(ErrorMessage("cannot find opponent"))
+            await connection.close()
             return
 
         white_username, black_username = sorted((username, opponent_username))
         match = await self._get_or_create_match(white_username, black_username)
         role = "w" if username == white_username else "b"
         logger.info("client '%s' matched with '%s' as %s", username, opponent_username, role)
-        await match.join(websocket, role)
+        await match.join(connection, role)
 
     async def _get_or_create_match(self, white_username: str, black_username: str) -> Match:
         """Both matched players independently compute the same (white, black)
