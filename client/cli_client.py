@@ -10,7 +10,15 @@ import logging
 import websockets
 
 from protocol import codec
-from protocol.messages import JumpCommand, LoginRequest, MoveCommand, PlayRequest
+from protocol.messages import (
+    CreateRoomRequest,
+    JoinRoomRequest,
+    JumpCommand,
+    LoginRequest,
+    MoveCommand,
+    PlayRequest,
+    RoomCreated,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -21,11 +29,18 @@ def _parse_input(line: str) -> object | None:
         return None
     if parts[0] == "play" and len(parts) == 1:
         return PlayRequest()
+    if parts[:2] == ["room", "create"] and len(parts) == 2:
+        return CreateRoomRequest()
+    if parts[:2] == ["room", "join"] and len(parts) == 3:
+        return JoinRoomRequest(parts[2])
     if parts[0] == "move" and len(parts) == 3:
         return MoveCommand(parts[1], parts[2])
     if parts[0] == "jump" and len(parts) == 2:
         return JumpCommand(parts[1])
-    print(f"unrecognized input: {line!r} (expected: play | move <from> <to> | jump <square>)")
+    print(
+        f"unrecognized input: {line!r} (expected: play | room create | "
+        f"room join <id> | move <from> <to> | jump <square>)"
+    )
     return None
 
 
@@ -33,6 +48,9 @@ async def _receive_loop(websocket) -> None:
     async for raw in websocket:
         message = codec.decode(raw)
         logger.info("received: %r", message)
+        if isinstance(message, RoomCreated):
+            print(f"=== ROOM CREATED: {message.room_id} -- share this id to invite a player ===")
+            continue
         print(message)
 
 

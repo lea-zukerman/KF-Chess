@@ -7,20 +7,22 @@ import websockets
 from protocol import codec
 from protocol.messages import (
     AuthError,
+    CreateRoomRequest,
     ErrorMessage,
+    JoinRoomRequest,
     LoggedIn,
     LoginRequest,
     MoveCommand,
     PlayRequest,
     RoleAssigned,
+    RoomCreated,
     SearchingForOpponent,
 )
 from server import db, matchmaking
+from server.lobby import FLOW_EXPECTED_HOME_COMMAND, FLOW_NO_OPPONENT_FOUND, ROOM_NOT_FOUND
 from server.server import (
     AUTH_EXPECTED_LOGIN,
     AUTH_INVALID_CREDENTIALS,
-    FLOW_EXPECTED_PLAY,
-    FLOW_NO_OPPONENT_FOUND,
     GameServer,
 )
 
@@ -85,7 +87,7 @@ class GameServerTests(unittest.IsolatedAsyncioTestCase):
                 searching_reply = codec.decode(await ws.recv())
                 timeout_reply = codec.decode(await asyncio.wait_for(ws.recv(), timeout=2))
 
-        self.assertEqual(error_reply, ErrorMessage(FLOW_EXPECTED_PLAY))
+        self.assertEqual(error_reply, ErrorMessage(FLOW_EXPECTED_HOME_COMMAND))
         self.assertEqual(searching_reply, SearchingForOpponent())
         self.assertEqual(timeout_reply, ErrorMessage(FLOW_NO_OPPONENT_FOUND))
 
@@ -147,6 +149,43 @@ class GameServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reply1, ErrorMessage(FLOW_NO_OPPONENT_FOUND))
         self.assertEqual(reply2, ErrorMessage(FLOW_NO_OPPONENT_FOUND))
+
+    async def test_create_room_returns_id_and_second_joiner_becomes_black(self):
+        _, uri = await self._start_server()
+
+        async with websockets.connect(uri) as ws1, websockets.connect(uri) as ws2:
+            await ws1.send(codec.encode(LoginRequest("Alice", "pass123")))
+            await ws1.recv()  # logged_in
+            await ws2.send(codec.encode(LoginRequest("Bob", "pass123")))
+            await ws2.recv()  # logged_in
+
+            await ws1.send(codec.encode(CreateRoomRequest()))
+            created = codec.decode(await ws1.recv())
+            self.assertIsInstance(created, RoomCreated)
+
+            await ws2.send(codec.encode(JoinRoomRequest(created.room_id)))
+            role1 = codec.decode(await ws1.recv())
+            role2 = codec.decode(await ws2.recv())
+
+        self.assertEqual(role1, RoleAssigned("w"))
+        self.assertEqual(role2, RoleAssigned("b"))
+
+    async def test_joining_unknown_room_errors_but_keeps_connection_open(self):
+        _, uri = await self._start_server()
+
+        async with websockets.connect(uri) as ws:
+            await ws.send(codec.encode(LoginRequest("Alice", "pass123")))
+            await ws.recv()  # logged_in
+
+            await ws.send(codec.encode(JoinRoomRequest("ZZZZ")))
+            error_reply = codec.decode(await ws.recv())
+
+            # still on the home screen: a valid create now succeeds
+            await ws.send(codec.encode(CreateRoomRequest()))
+            created = codec.decode(await ws.recv())
+
+        self.assertEqual(error_reply, ErrorMessage(ROOM_NOT_FOUND))
+        self.assertIsInstance(created, RoomCreated)
 
 
 if __name__ == '__main__':

@@ -26,6 +26,17 @@ class PlayRequest:
 
 
 @dataclass(frozen=True)
+class CreateRoomRequest:
+    type: ClassVar[str] = "create_room"
+
+
+@dataclass(frozen=True)
+class JoinRoomRequest:
+    type: ClassVar[str] = "join_room"
+    room_id: str
+
+
+@dataclass(frozen=True)
 class MoveCommand:
     type: ClassVar[str] = "move"
     from_square: str
@@ -48,6 +59,12 @@ class LoggedIn:
 @dataclass(frozen=True)
 class SearchingForOpponent:
     type: ClassVar[str] = "searching_for_opponent"
+
+
+@dataclass(frozen=True)
+class RoomCreated:
+    type: ClassVar[str] = "room_created"
+    room_id: str
 
 
 @dataclass(frozen=True)

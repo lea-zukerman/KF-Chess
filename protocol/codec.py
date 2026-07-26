@@ -15,10 +15,13 @@ from . import messages
 _MESSAGE_CLASSES = (
     messages.LoginRequest,
     messages.PlayRequest,
+    messages.CreateRoomRequest,
+    messages.JoinRoomRequest,
     messages.MoveCommand,
     messages.JumpCommand,
     messages.LoggedIn,
     messages.SearchingForOpponent,
+    messages.RoomCreated,
     messages.RoleAssigned,
     messages.PlayerJoined,
     messages.StateUpdate,

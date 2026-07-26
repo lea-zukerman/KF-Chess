@@ -8,19 +8,18 @@ import logging
 
 import websockets
 
-from protocol.messages import AuthError, ErrorMessage, LoggedIn, LoginRequest, PlayRequest, SearchingForOpponent
+from protocol.messages import AuthError, LoggedIn, LoginRequest
 
-from . import db
+from . import db, lobby
 from .connection import Connection, ConnectionClosed
 from .match import Match
-from .matchmaking import Matchmaker, NoOpponentFound
+from .matchmaking import Matchmaker
+from .rooms import RoomManager
 
 logger = logging.getLogger(__name__)
 
 AUTH_EXPECTED_LOGIN = "EXPECTED_LOGIN"
 AUTH_INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
-FLOW_EXPECTED_PLAY = "EXPECTED_PLAY"
-FLOW_NO_OPPONENT_FOUND = "NO_OPPONENT_FOUND"
 
 
 class GameServer:
@@ -29,6 +28,7 @@ class GameServer:
     def __init__(self, db_path: str = db.DEFAULT_DB_PATH):
         self.db_conn = db.init_db(db_path)
         self.matchmaker = Matchmaker()
+        self.room_manager = RoomManager(self.db_conn)
         self._pending_matches: dict[tuple[str, str], Match] = {}
         self._match_lock = asyncio.Lock()
 
@@ -38,10 +38,7 @@ class GameServer:
         if username is None:
             return
 
-        if not await self._wait_for_play(connection):
-            return
-
-        await self._enter_matchmaking(connection, username)
+        await self._home_screen(connection, username)
 
     async def _login(self, connection: Connection) -> str | None:
         try:
@@ -63,48 +60,16 @@ class GameServer:
         await connection.send(LoggedIn())
         return message.username
 
-    async def _wait_for_play(self, connection: Connection) -> bool:
+    async def _home_screen(self, connection: Connection, username: str) -> None:
+        """Post-login lobby: read home-screen commands and let lobby.dispatch
+        route each one. This loop knows nothing about Play vs Room -- it just
+        ends once a handler has handed the connection off to a Match."""
         try:
             async for message in connection:
-                if isinstance(message, PlayRequest):
-                    return True
-                await connection.send(ErrorMessage(FLOW_EXPECTED_PLAY))
+                if await lobby.dispatch(self, connection, username, message):
+                    return
         except ConnectionClosed:
             pass
-        return False
-
-    async def _enter_matchmaking(self, connection: Connection, username: str) -> None:
-        elo_rating = db.get_elo(self.db_conn, username)
-        await connection.send(SearchingForOpponent())
-        logger.info("client '%s' (elo %d) entered matchmaking", username, elo_rating)
-
-        try:
-            opponent_username, _opponent_elo = await self.matchmaker.find_match(username, elo_rating)
-        except NoOpponentFound:
-            await connection.send(ErrorMessage(FLOW_NO_OPPONENT_FOUND))
-            await connection.close()
-            return
-
-        white_username, black_username = sorted((username, opponent_username))
-        match = await self._get_or_create_match(white_username, black_username)
-        role = "w" if username == white_username else "b"
-        logger.info("client '%s' matched with '%s' as %s", username, opponent_username, role)
-        await match.join(connection, role)
-
-    async def _get_or_create_match(self, white_username: str, black_username: str) -> Match:
-        """Both matched players independently compute the same (white, black)
-        key and arrive here separately -- the first to arrive creates the
-        Match, the second finds it waiting and consumes the pending entry."""
-        key = (white_username, black_username)
-        async with self._match_lock:
-            match = self._pending_matches.get(key)
-            if match is None:
-                match = Match(white_username, black_username, self.db_conn)
-                match.start()
-                self._pending_matches[key] = match
-            else:
-                del self._pending_matches[key]
-        return match
 
 
 async def run_server(host: str = "localhost", port: int = 8765) -> None:
