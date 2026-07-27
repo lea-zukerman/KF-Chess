@@ -147,6 +147,11 @@ async def _enter_game(connection: Connection, action: str,
             created_room_id = message.room_id
             print(f"\n=== ROOM CREATED: {message.room_id} -- share this id. "
                   f"Waiting for a player to join... ===\n")
+            messagebox.showinfo(
+                "Kung Fu Chess",
+                f"Room created: {message.room_id}\n\n"
+                "Share this id with the other player. Waiting for them to join...",
+            )
         elif isinstance(message, SearchingForOpponent):
             print("Searching for an opponent...")
         elif isinstance(message, ErrorMessage):
