@@ -8,7 +8,7 @@ from protocol import codec
 from protocol.messages import ErrorMessage, MoveCommand, MoveRejected, PlayerJoined, ResignCountdown, RoleAssigned, StateUpdate
 from server import db
 from server import match as match_module
-from server.connection import Connection
+from transport.connection import Connection
 from server.match import MOVE_ERROR_OBSERVER, MOVE_ERROR_WRONG_TURN, Match
 
 

@@ -2,7 +2,7 @@
 
 Owns the bus, GameSession, connection tracking, tick loop, broadcast
 dispatch, ELO update, and disconnect/auto-resign handling for one game.
-Talks to the network only through server.connection.Connection (protocol
+Talks to the network only through transport.connection.Connection (protocol
 message objects in/out) and to game rules only through kungfu_chess -- it
 never touches a raw websocket, JSON, or chess rule logic directly.
 """
@@ -18,8 +18,9 @@ from kungfu_chess.app.game_session import GameSession
 
 from protocol.messages import MoveRejected, PlayerJoined, ResignCountdown, RoleAssigned, StateUpdate
 
+from transport.connection import Connection, ConnectionClosed
+
 from . import commands, db, elo
-from .connection import Connection, ConnectionClosed
 
 logger = logging.getLogger(__name__)
 

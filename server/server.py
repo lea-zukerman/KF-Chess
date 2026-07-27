@@ -11,7 +11,7 @@ import websockets
 from protocol.messages import AuthError, LoggedIn, LoginRequest
 
 from . import db, lobby
-from .connection import Connection, ConnectionClosed
+from transport.connection import Connection, ConnectionClosed
 from .match import Match
 from .matchmaking import Matchmaker
 from .rooms import RoomManager

@@ -13,8 +13,9 @@ kungfu_chess/      Pure game logic (model, rules, realtime, engine, app).
                    Knows nothing about sockets, players, or rooms.
 protocol/          Wire messages shared by client and server:
                    messages.py (one dataclass per message) + codec.py (JSON).
+transport/         connection.py - the only file that touches `websockets`,
+                   shared by both server and client (protocol objects in/out).
 server/            WebSocket server:
-                   connection.py  - the only file that touches `websockets`
                    server.py      - lobby: login, then the home-screen loop
                    lobby.py       - home-screen command dispatch (play / room)
                    matchmaking.py - ELO-range pairing for "Play"
@@ -22,15 +23,33 @@ server/            WebSocket server:
                    match.py       - one live game: bus, tick loop, broadcast
                    commands.py    - in-match command dispatch (move / jump)
                    db.py, elo.py  - SQLite users/passwords/ratings
-client/            cli_client.py  - minimal text client (not the real UI)
+client/            cli_client.py  - minimal text client
+                   gui_client.py  - graphical client (renders server state,
+                                    reuses kungfu_chess/view for drawing)
+                   game_window.py - the cv2 window + click-to-command input
+run_game.py        One-shot local launcher: server + N player windows.
 ```
 
 ## Requirements
 
 - Python 3.12+
 - [`websockets`](https://pypi.org/project/websockets/) (server and client)
-- OpenCV (`cv2`) is optional — only the graphical client uses it, and it
-  falls back to `mock_cv2` when it is not installed.
+- The graphical client also needs OpenCV (`cv2`) and Tk (`tkinter`, bundled
+  with most Python installs). The text client needs neither. Piece image
+  assets live outside this repo — pass their folder with `--pieces-dir`
+  (default points at a local `pieces2` folder).
+
+## Quick start (local, one command)
+
+Launch the server and two player windows together:
+
+```bash
+python run_game.py                 # or: python run_game.py --players 3
+```
+
+Log in with a different username in each window; matchmaking pairs them.
+Closing the windows (or Ctrl+C) stops the server too. To run the pieces
+across machines, or with the text client, use the steps below instead.
 
 ## Running the networked game
 
@@ -68,6 +87,18 @@ way, once two players are in, use the in-game commands:
 
 Both players (and any observers) receive the same broadcast game state.
 If a player disconnects, the game auto-resigns after a 20-second countdown.
+
+### Graphical client
+
+Instead of the text client, run the graphical one (currently "Play" only):
+
+```bash
+python -m client.gui_client       # --host / --port / --pieces-dir as above
+```
+
+It shows a tkinter login dialog, then opens a board window. Left-click a
+source cell then a destination to move; right-click a piece to jump it in
+place; press `q` to quit. `run_game.py` launches this client for you.
 
 ## Running the text board parser
 

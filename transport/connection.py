@@ -1,6 +1,8 @@
-"""Thin wrapper around one websocket: the only file in server/ that imports
-`websockets` directly. Everything above this layer sends/receives protocol
-message objects and never touches a raw websocket or JSON string.
+"""Shared websocket wrapper: the only place in the project that imports
+`websockets`. Both the server and the client send/receive protocol message
+objects through this, never raw text or JSON. It lives in its own top-level
+package (not inside `kungfu_chess/`, which must stay network-free, and not
+inside `server/` or `client/`, which must not import each other).
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ class MalformedMessage:
     """Returned by receive() when the raw payload couldn't be decoded into
     a known protocol message. A value, not a raised exception, so a single
     bad message doesn't break the caller's receive loop -- it flows through
-    like any other unexpected message type and gets an ErrorMessage reply."""
+    like any other unexpected message type and gets handled like one."""
 
     def __init__(self, reason: str):
         self.reason = reason
@@ -30,6 +32,13 @@ class MalformedMessage:
 class Connection:
     def __init__(self, websocket):
         self._websocket = websocket
+
+    @classmethod
+    async def connect(cls, host: str, port: int) -> "Connection":
+        """Client-side helper: open a websocket to host:port and wrap it.
+        The server side wraps sockets handed to it by `websockets.serve`."""
+        websocket = await websockets.connect(f"ws://{host}:{port}")
+        return cls(websocket)
 
     async def send(self, message: object) -> None:
         try:
