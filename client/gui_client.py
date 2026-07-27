@@ -18,12 +18,16 @@ from tkinter import messagebox, simpledialog
 
 from protocol.messages import (
     AuthError,
+    CreateRoomRequest,
     ErrorMessage,
+    JoinRoomRequest,
+    LoggedIn,
     LoginRequest,
     MoveRejected,
     PlayRequest,
     ResignCountdown,
     RoleAssigned,
+    RoomCreated,
     SearchingForOpponent,
     StateUpdate,
 )
@@ -56,24 +60,97 @@ def _ask_login() -> tuple[str, str] | None:
         root.destroy()
 
 
-async def _handshake(connection: Connection, username: str, password: str) -> str:
-    """Log in and enter matchmaking; return the assigned role ('w'/'b').
+def _ask_home_choice() -> tuple[str, str | None] | None:
+    """Home screen: pick a way into a game. Mirrors the CLI's play/room
+    commands as a small "windows message with a text box and buttons".
 
-    Raises HandshakeFailed on bad credentials or when no opponent is found.
+    Returns ('play', None), ('create', None), ('join', room_id), or None
+    if the player cancelled.
     """
-    await connection.send(LoginRequest(username, password))
-    reply = await connection.receive()
-    if isinstance(reply, AuthError):
-        raise HandshakeFailed(f"login failed: {reply.reason}")
+    root = tk.Tk()
+    root.title("Kung Fu Chess")
+    result: list[tuple[str, str | None] | None] = [None]
 
-    await connection.send(PlayRequest())
+    def choose(action: str, room_id: str | None = None) -> None:
+        result[0] = (action, room_id)
+        root.destroy()
+
+    tk.Label(root, text="How do you want to play?").grid(row=0, column=0, columnspan=2, padx=10, pady=8)
+    tk.Button(root, text="Play (matchmaking)", width=24,
+              command=lambda: choose("play")).grid(row=1, column=0, columnspan=2, padx=10, pady=4)
+
+    tk.Label(root, text="Room id:").grid(row=2, column=0, padx=10, pady=4, sticky="e")
+    entry = tk.Entry(root)
+    entry.grid(row=2, column=1, padx=10, pady=4)
+
+    def join() -> None:
+        room_id = entry.get().strip()
+        if room_id:
+            choose("join", room_id)
+
+    tk.Button(root, text="Create room", width=11,
+              command=lambda: choose("create")).grid(row=3, column=0, padx=6, pady=6)
+    tk.Button(root, text="Join room", width=11, command=join).grid(row=3, column=1, padx=6, pady=6)
+    tk.Button(root, text="Cancel", width=11, command=root.destroy).grid(row=4, column=0, columnspan=2, pady=6)
+
+    root.mainloop()
+    return result[0]
+
+
+async def _login(host: str, port: int) -> tuple[Connection, str] | None:
+    """Prompt for credentials and validate them with the server right away,
+    re-prompting on failure. Returns an authenticated (connection, username),
+    or None if cancelled.
+
+    A fresh connection is opened for each attempt because the server closes
+    the socket on a failed login -- so the same connection can't be retried.
+    Kept separate from _enter_game so a wrong password is reported at the
+    login step, before the home-screen dialog, not later.
+    """
+    while True:
+        credentials = _ask_login()
+        if credentials is None:
+            return None
+        username, password = credentials
+        connection = await Connection.connect(host, port)
+        await connection.send(LoginRequest(username, password))
+        reply = await connection.receive()
+        if isinstance(reply, LoggedIn):
+            return connection, username
+        await connection.close()
+        reason = reply.reason if isinstance(reply, AuthError) else "unexpected response"
+        messagebox.showerror("Kung Fu Chess", f"Login failed: {reason}")
+
+
+async def _enter_game(connection: Connection, action: str,
+                      room_id: str | None) -> tuple[str, str | None]:
+    """Send the chosen home-screen action (play/create/join) and wait until a
+    game starts; return the assigned role ('w'/'b'/'observer') and the room id
+    the game was created with (None for matchmaking).
+
+    Raises HandshakeFailed on an unknown room or when no opponent is found.
+    """
+    if action == "play":
+        await connection.send(PlayRequest())
+    elif action == "create":
+        await connection.send(CreateRoomRequest())
+    elif action == "join":
+        await connection.send(JoinRoomRequest(room_id))
+    else:
+        raise HandshakeFailed(f"unknown action: {action}")
+
+    created_room_id: str | None = None
     async for message in connection:
         if isinstance(message, RoleAssigned):
-            return message.role
-        if isinstance(message, SearchingForOpponent):
+            return message.role, created_room_id
+        if isinstance(message, RoomCreated):
+            created_room_id = message.room_id
+            print(f"\n=== ROOM CREATED: {message.room_id} -- share this id. "
+                  f"Waiting for a player to join... ===\n")
+        elif isinstance(message, SearchingForOpponent):
             print("Searching for an opponent...")
         elif isinstance(message, ErrorMessage):
-            raise HandshakeFailed(f"matchmaking failed: {message.message}")
+            raise HandshakeFailed(f"could not start game: {message.message}")
     raise HandshakeFailed("connection closed before a game started")
 
 
@@ -113,18 +190,31 @@ async def _render_loop(window: GameWindow) -> None:
         await asyncio.sleep(0.016)
 
 
-async def run(host: str, port: int, username: str, password: str, pieces_dir: str) -> None:
-    connection = await Connection.connect(host, port)
+async def run(host: str, port: int, pieces_dir: str) -> None:
+    login_result = await _login(host, port)
+    if login_result is None:
+        print("Login cancelled.")
+        return
+    connection, _username = login_result
+
+    choice = _ask_home_choice()
+    if choice is None:
+        print("Cancelled.")
+        await connection.close()
+        return
+    action, room_id = choice
+
     try:
-        role = await _handshake(connection, username, password)
+        role, created_room_id = await _enter_game(connection, action, room_id)
     except HandshakeFailed as exc:
         logger.info("%s", exc)
         messagebox.showerror("Kung Fu Chess", str(exc))
         await connection.close()
         return
 
-    logger.info("joined game as %s", role)
-    window = GameWindow(pieces_dir, role)
+    display_room = created_room_id if action == "create" else (room_id if action == "join" else None)
+    logger.info("joined game as %s (room %s)", role, display_room)
+    window = GameWindow(pieces_dir, role, room_id=display_room)
     window.open()
 
     receive_task = asyncio.create_task(_receive_loop(connection, window))
@@ -148,14 +238,8 @@ def main() -> None:
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    credentials = _ask_login()
-    if credentials is None:
-        print("Login cancelled.")
-        return
-    username, password = credentials
-
     try:
-        asyncio.run(run(args.host, args.port, username, password, args.pieces_dir))
+        asyncio.run(run(args.host, args.port, args.pieces_dir))
     except (KeyboardInterrupt, ConnectionClosed):
         pass
 

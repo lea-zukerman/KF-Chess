@@ -36,10 +36,11 @@ class GameWindow:
     """Holds the latest server state, renders it, and emits click intents."""
 
     def __init__(self, pieces_dir: str | pathlib.Path, my_role: str,
-                 board_size: tuple[int, int] = (512, 512)):
+                 board_size: tuple[int, int] = (512, 512), room_id: str | None = None):
         self.window_name = "Kung Fu Chess"
         self.my_role = my_role  # 'w' / 'b' / 'observer'
         self.board_size = board_size
+        self.room_id = room_id  # shown on screen when the game came from a room
         self.renderer = GameRenderer(pieces_dir, board_size=board_size)
 
         self.board: Board | None = None       # display-only, rebuilt per StateUpdate
@@ -121,6 +122,9 @@ class GameWindow:
         put(f"Turn: {state.turn}", 25, (0, 255, 255))
         put(f"Score  W:{state.score_w}  B:{state.score_b}", 50, (255, 255, 0))
         put(f"You: {self.my_role}", 75, (0, 200, 0))
+        if self.room_id:
+            cv2.putText(frame, f"Room: {self.room_id}", (self.board_size[0] - 200, 25),
+                        font, 0.6, (255, 200, 0), 2)
         if self.status:
             put(self.status, 100, (0, 165, 255))
         names = f"{state.white_name}(W,{state.white_elo}) vs {state.black_name}(B,{state.black_elo})"
