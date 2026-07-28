@@ -115,6 +115,7 @@ flowchart TB
     C[Clients]
 
     subgraph region["אזור אחד — Kubernetes / K3s Cluster"]
+        ING[Ingress / LoadBalancer<br/>TLS termination, rate limit]
         API[API Gateway<br/>REST: login, rooms, history]
         WS[WS Gateway<br/>חיבורים חיים, asyncio]
         AUTH[Auth Service]
@@ -130,8 +131,10 @@ flowchart TB
         OBS[Observability]
     end
 
-    C -->|REST| API
-    C -->|WebSocket| WS
+    C -->|https| ING
+    C -->|wss| ING
+    ING --> API
+    ING --> WS
     API --> AUTH
     API --> ROOMS
     AUTH --> PG
@@ -160,6 +163,7 @@ flowchart TB
 
 | רכיב | אחריות | סטייט | סקיילינג |
 |------|--------|-------|----------|
+| **Ingress / LB** | נקודת הכניסה היחידה מהאינטרנט; סיום TLS, ניתוב חיצוני, הגבלת קצב (15.5) | חסר סטייט | מנוהל בידי הענן |
 | **API Gateway** | נקודת הכניסה לכל מה שאינו זמן אמת; מנתב ל‑Auth ול‑Rooms | חסר סטייט | HPA לפי CPU |
 | **WS Gateway** | מחזיק את החיבור החי מול הלקוח, מנתב הודעות אל השארד הנכון ובחזרה | מיפוי חיבור→שארד (בזיכרון + Redis) | HPA לפי מספר חיבורים |
 | **Auth Service** | אימות סיסמה, הנפקת session token | חסר סטייט | HPA |
@@ -714,11 +718,16 @@ Apache 2.0, Redis תחת AGPLv3 או Valkey תחת BSD, MinIO תחת AGPLv3). מ
 
 ### 15.2 הצפנה בתנועה
 
-התעבורה החיצונית עוברת ב‑`https` וב‑`wss`, וה‑TLS **מסתיים ב‑Ingress**:
+התעבורה החיצונית עוברת ב‑`https` וב‑`wss`, וה‑TLS **מסתיים ב‑Ingress** —
+הרכיב שנוסף לדיאגרמה בסעיף 3 בדיוק לשם כך:
+
+<div dir="ltr">
 
 ```
-Client  --wss (מוצפן)-->  Ingress  --ws (רגיל)-->  WS Gateway
+Client  --wss (encrypted)-->  Ingress  --ws (plain)-->  WS Gateway
 ```
+
+</div>
 
 המשמעות המעשית: **קוד השירותים אינו משתנה.** הם ממשיכים לדבר `ws`/`http`
 בתוך הקלאסטר, וניהול התעודות הוא הגדרה במניפסט (\u200F`cert-manager` מול
