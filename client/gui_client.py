@@ -17,31 +17,20 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 
 from protocol.messages import (
-    AuthError,
     CreateRoomRequest,
-    ErrorMessage,
     JoinRoomRequest,
-    LoggedIn,
     LoginRequest,
-    MoveRejected,
     PlayRequest,
-    ResignCountdown,
-    RoleAssigned,
-    RoomCreated,
-    SearchingForOpponent,
-    StateUpdate,
 )
 from transport.connection import Connection, ConnectionClosed
 
+from . import incoming
 from .game_window import GameWindow
+from .incoming import HandshakeFailed
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_PIECES_DIR = r"c:\Users\USER\Desktop\repo\CTD26\pieces2"
-
-
-class HandshakeFailed(Exception):
-    """Login/matchmaking could not reach a live game (bad auth, no opponent)."""
 
 
 def _ask_login() -> tuple[str, str] | None:
@@ -115,10 +104,10 @@ async def _login(host: str, port: int) -> tuple[Connection, str] | None:
         connection = await Connection.connect(host, port)
         await connection.send(LoginRequest(username, password))
         reply = await connection.receive()
-        if isinstance(reply, LoggedIn):
+        ok, reason = incoming.dispatch_login(reply)
+        if ok:
             return connection, username
         await connection.close()
-        reason = reply.reason if isinstance(reply, AuthError) else "unexpected response"
         messagebox.showerror("Kung Fu Chess", f"Login failed: {reason}")
 
 
@@ -139,35 +128,18 @@ async def _enter_game(connection: Connection, action: str,
     else:
         raise HandshakeFailed(f"unknown action: {action}")
 
-    created_room_id: str | None = None
+    ctx = incoming.EnterContext()
     async for message in connection:
-        if isinstance(message, RoleAssigned):
-            return message.role, created_room_id
-        if isinstance(message, RoomCreated):
-            created_room_id = message.room_id
-            print(f"\n=== ROOM CREATED: {message.room_id} -- share this id. "
-                  f"Waiting for a player to join... ===\n")
-            messagebox.showinfo(
-                "Kung Fu Chess",
-                f"Room created: {message.room_id}\n\n"
-                "Share this id with the other player. Waiting for them to join...",
-            )
-        elif isinstance(message, SearchingForOpponent):
-            print("Searching for an opponent...")
-        elif isinstance(message, ErrorMessage):
-            raise HandshakeFailed(f"could not start game: {message.message}")
+        result = incoming.dispatch_enter(ctx, message)
+        if result is not None:
+            return result
     raise HandshakeFailed("connection closed before a game started")
 
 
 async def _receive_loop(connection: Connection, window: GameWindow) -> None:
     try:
         async for message in connection:
-            if isinstance(message, StateUpdate):
-                window.apply_state(message)
-            elif isinstance(message, MoveRejected):
-                window.set_status(f"move rejected: {message.reason}")
-            elif isinstance(message, ResignCountdown):
-                window.set_status(f"opponent disconnected: {message.seconds_remaining}s")
+            incoming.dispatch_game(window, message)
     except ConnectionClosed:
         pass
     finally:
