@@ -118,6 +118,7 @@ flowchart TB
         API[API Gateway<br/>REST: login, rooms, history]
         WS[WS Gateway<br/>חיבורים חיים, asyncio]
         AUTH[Auth Service]
+        ROOMS[Rooms API<br/>create / join by id]
         MM[Matchmaker]
         ALLOC[Game Allocator]
         BUS[[Event Bus — pub/sub]]
@@ -132,31 +133,37 @@ flowchart TB
     C -->|REST| API
     C -->|WebSocket| WS
     API --> AUTH
+    API --> ROOMS
     AUTH --> PG
-    API --> RD
-    WS --> BUS
-    MM --> BUS
-    ALLOC --> BUS
-    SHARDS --> BUS
+    ROOMS --> RD
+    WS --> SHARDS
     SHARDS -->|game_over| MQ
     MQ --> RW
     RW --> PG
     MM --> RD
     ALLOC --> RD
-    WS --> SHARDS
+
+    WS -.-> BUS
+    MM -.-> BUS
+    ALLOC -.-> BUS
+    ROOMS -.-> BUS
+    SHARDS -.-> BUS
     SHARDS -.-> OBS
     WS -.-> OBS
 ```
 
 </div>
 
+**מוסכמת הקווים:** קו מלא = זרימת דאטה; קו מקווקו = בקרה, תיאום וניטור.
+
 ### 3.1 טבלת רכיבים
 
 | רכיב | אחריות | סטייט | סקיילינג |
 |------|--------|-------|----------|
-| **API Gateway** | כל מה שאינו זמן אמת: login, יצירת/רשימת חדרים, היסטוריה | חסר סטייט | HPA לפי CPU |
+| **API Gateway** | נקודת הכניסה לכל מה שאינו זמן אמת; מנתב ל‑Auth ול‑Rooms | חסר סטייט | HPA לפי CPU |
 | **WS Gateway** | מחזיק את החיבור החי מול הלקוח, מנתב הודעות אל השארד הנכון ובחזרה | מיפוי חיבור→שארד (בזיכרון + Redis) | HPA לפי מספר חיבורים |
 | **Auth Service** | אימות סיסמה, הנפקת session token | חסר סטייט | HPA |
+| **Rooms API** | יצירת חדר ומזהה, הצטרפות לפי מזהה, רשימת חדרים | רישום חדרים ב‑Redis עם TTL | HPA |
 | **Matchmaker** | מוצא זוג שחקנים בטווח ELO ±100 | תור ב‑Redis (sorted set לפי ELO) | מחולק לפי מדף ELO ואזור |
 | **Game Allocator** | מחליט **על איזה שארד** ירוץ כל משחק | מפת עומס שארדים ב‑Redis | מופעים ספורים, בחירת מנהיג |
 | **Game Server Shard** | מריץ את המשחקים עצמם. `GameEngine` הוא ה‑single source of truth | משחקים חיים בזיכרון (ארעי) | הרוב המכריע של הצי |
