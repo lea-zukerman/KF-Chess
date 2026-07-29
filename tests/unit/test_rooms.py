@@ -16,7 +16,7 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         db.authenticate_or_register(self.db_conn, "Carol", "pass123")
         # Implements real Redis semantics (nx, ex, sorted sets) in memory,
         # so these stay honest tests without needing a Redis process.
-        self.manager = RoomManager(self.db_conn, fakeredis.aioredis.FakeRedis())
+        self.manager = RoomManager(self.db_conn, fakeredis.aioredis.FakeRedis(decode_responses=True))
 
     async def test_create_room_returns_id_from_allowed_alphabet(self):
         room_id = await self.manager.create_room("Alice")

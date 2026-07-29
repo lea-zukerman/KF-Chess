@@ -37,9 +37,9 @@ class GameServer:
         self.redis = (
             redis_client
             if redis_client is not None
-            else redis.asyncio.from_url(DEFAULT_REDIS_URL)
+            else redis.asyncio.from_url(DEFAULT_REDIS_URL, decode_responses=True)
         )
-        self.matchmaker = Matchmaker()
+        self.matchmaker = Matchmaker(self.redis)
         self.room_manager = RoomManager(self.db_conn, self.redis)
         self._pending_matches: dict[tuple[str, str], Match] = {}
         self._match_lock = asyncio.Lock()

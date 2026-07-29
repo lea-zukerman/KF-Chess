@@ -1,7 +1,26 @@
+"""ELO-range pairing for the "Play" flow.
+
+The pool of waiting players lives in Redis, in two sorted sets over the same
+members: one scored by rating, which is what makes "find someone within
++-100" a range query instead of a scan, and one scored by the time they
+joined, which is what lets any process drop players who have waited too
+long. See Server_Design.md section 5.2.1.
+
+Waiting itself is still an asyncio.Event in this process. That is the half
+this stage does not move: a player is woken by the process holding their
+connection, and until there is a message bus to wake them across processes,
+moving it out would mean writing something untestable.
+"""
+
 import asyncio
+import time
 
 ELO_RANGE = 100
 MATCH_TIMEOUT_SECONDS = 60
+
+# Same members in both, scored differently: one to search by, one to expire by.
+WAITING_BY_ELO = "waiting:elo"
+WAITING_BY_TIME = "waiting:time"
 
 
 class NoOpponentFound(Exception):
@@ -9,32 +28,84 @@ class NoOpponentFound(Exception):
 
 
 class _WaitingPlayer:
-    def __init__(self, username, elo):
-        self.username = username
+    def __init__(self, elo: int):
         self.elo = elo
-        self.opponent = None
+        self.opponent: tuple[str, int] | None = None
         self.event = asyncio.Event()
 
 
 class Matchmaker:
-    def __init__(self):
-        self._waiting = []
+    def __init__(self, redis):
+        self.redis = redis
+        self._waiting: dict[str, _WaitingPlayer] = {}
 
-    async def find_match(self, username, elo):
-        for candidate in self._waiting:
-            if abs(candidate.elo - elo) <= ELO_RANGE:
-                self._waiting.remove(candidate)
-                candidate.opponent = (username, elo)
-                candidate.event.set()
-                return candidate.username, candidate.elo
+    async def find_match(self, username: str, elo: int) -> tuple[str, int]:
+        """Pair with a waiting player within ELO_RANGE, or join the pool and
+        wait to be picked. Raises NoOpponentFound after MATCH_TIMEOUT_SECONDS."""
+        await self._drop_expired()
 
-        me = _WaitingPlayer(username, elo)
-        self._waiting.append(me)
+        opponent = await self._claim_opponent(username, elo)
+        if opponent is not None:
+            self._wake(opponent[0], username, elo)
+            return opponent
+
+        me = _WaitingPlayer(elo)
+        self._waiting[username] = me
+        await self._enqueue(username, elo)
         try:
             await asyncio.wait_for(me.event.wait(), timeout=MATCH_TIMEOUT_SECONDS)
             return me.opponent
         except asyncio.TimeoutError:
             raise NoOpponentFound(username)
         finally:
-            if me in self._waiting:
-                self._waiting.remove(me)
+            self._waiting.pop(username, None)
+            await self._dequeue(username)
+
+    async def _claim_opponent(self, username: str, elo: int) -> tuple[str, int] | None:
+        """Take one waiting player within range, or None.
+
+        zrem is the whole concurrency story: it returns how many members it
+        actually removed, so when two processes race for the same candidate
+        exactly one gets 1 back and the other gets 0 and moves on. No lock,
+        and no read-then-write window to lose.
+        """
+        candidates = await self.redis.zrangebyscore(
+            WAITING_BY_ELO, elo - ELO_RANGE, elo + ELO_RANGE, withscores=True
+        )
+        for candidate, candidate_elo in candidates:
+            if candidate == username:
+                continue
+            if await self.redis.zrem(WAITING_BY_ELO, candidate):
+                await self.redis.zrem(WAITING_BY_TIME, candidate)
+                return candidate, int(candidate_elo)
+        return None
+
+    def _wake(self, opponent: str, username: str, elo: int) -> None:
+        """Hand the result to the waiting coroutine, if it is in this process.
+        With one server it always is; with several, only the process holding
+        that player's connection can wake them."""
+        waiting = self._waiting.get(opponent)
+        if waiting is not None:
+            waiting.opponent = (username, elo)
+            waiting.event.set()
+
+    async def _enqueue(self, username: str, elo: int) -> None:
+        await self.redis.zadd(WAITING_BY_ELO, {username: elo})
+        await self.redis.zadd(WAITING_BY_TIME, {username: time.time()})
+
+    async def _dequeue(self, username: str) -> None:
+        await self.redis.zrem(WAITING_BY_ELO, username)
+        await self.redis.zrem(WAITING_BY_TIME, username)
+
+    async def _drop_expired(self) -> None:
+        """Remove players who have been waiting past the timeout.
+
+        Needed now that the pool outlives the process that filled it: a server
+        killed mid-wait never runs its finally block, and its entries would sit
+        in Redis forever. Any process can run this, removing an already-removed
+        member is a no-op, so it needs no owner and no coordination.
+        """
+        cutoff = time.time() - MATCH_TIMEOUT_SECONDS
+        expired = await self.redis.zrangebyscore(WAITING_BY_TIME, "-inf", cutoff)
+        for username in expired:
+            await self._dequeue(username)
