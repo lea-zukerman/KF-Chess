@@ -1,0 +1,40 @@
+# Stage 1 of Server_Design.md section 12: the existing single-process
+# server, containerised, with its user data moved out to PostgreSQL.
+# Splitting the server into gateway/shards comes in stage 3.
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: kfchess
+      POSTGRES_PASSWORD: kfchess
+      POSTGRES_DB: kfchess
+    # depends_on only waits for the container to start, not for the
+    # database to accept connections -- without this the app connects
+    # too early and dies on boot.
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kfchess -d kfchess"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  app:
+    build:
+      context: .
+      args:
+        # Empty unless the environment sets it, so an ordinary build
+        # verifies certificates. See the note in the Dockerfile.
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST-}
+    environment:
+      # "postgres" is the service name above; Compose resolves it over
+      # its internal DNS, the same way a Service name resolves in k8s.
+      DB_URL: postgresql://kfchess:kfchess@postgres:5432/kfchess
+    ports:
+      - "8765:8765"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  pgdata:

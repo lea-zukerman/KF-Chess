@@ -28,8 +28,8 @@ from server.server import (
 
 
 class GameServerTests(unittest.IsolatedAsyncioTestCase):
-    async def _start_server(self, db_path=":memory:"):
-        server = GameServer(db_path=db_path)
+    async def _start_server(self, db_url=":memory:"):
+        server = GameServer(db_url=db_url)
         ws_server = await websockets.serve(server.handle_client, "localhost", 0)
         self.addAsyncCleanup(ws_server.close)
         port = ws_server.sockets[0].getsockname()[1]

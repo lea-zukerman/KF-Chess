@@ -1,0 +1,4 @@
+# Server-only dependencies. Deliberately smaller than requirements.txt:
+# the server never renders anything, so it does not need OpenCV.
+websockets>=12.0
+psycopg[binary]>=3.1

@@ -25,8 +25,8 @@ AUTH_INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
 class GameServer:
     """Lobby: login + matchmaking. Creates one Match per matched pair."""
 
-    def __init__(self, db_path: str = db.DEFAULT_DB_PATH):
-        self.db_conn = db.init_db(db_path)
+    def __init__(self, db_url: str = db.DEFAULT_DB_URL):
+        self.db_conn = db.init_db(db_url)
         self.matchmaker = Matchmaker()
         self.room_manager = RoomManager(self.db_conn)
         self._pending_matches: dict[tuple[str, str], Match] = {}
