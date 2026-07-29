@@ -19,6 +19,17 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
 
+  # No volume, deliberately. Everything Redis holds here is short-lived
+  # by nature -- a queue entry, a session, a live room -- so losing it
+  # costs a re-queue, not data. See Server_Design.md section 4.2.
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
   app:
     build:
       context: .
@@ -30,10 +41,13 @@ services:
       # "postgres" is the service name above; Compose resolves it over
       # its internal DNS, the same way a Service name resolves in k8s.
       DB_URL: postgresql://kfchess:kfchess@postgres:5432/kfchess
+      REDIS_URL: redis://redis:6379
     ports:
       - "8765:8765"
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:

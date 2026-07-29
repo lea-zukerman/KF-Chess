@@ -1,3 +1,8 @@
 # Add runtime dependencies here
 opencv-python>=4.8.0
 websockets>=12.0
+redis>=5.0
+
+# Test-only: an in-memory Redis with the real semantics, so the suite runs
+# without a Redis process. Deliberately absent from requirements-server.txt.
+fakeredis>=2.20

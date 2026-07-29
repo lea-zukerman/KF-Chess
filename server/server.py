@@ -6,6 +6,9 @@ import argparse
 import asyncio
 import logging
 
+import os
+
+import redis.asyncio
 import websockets
 
 from protocol.messages import AuthError, LoggedIn, LoginRequest
@@ -21,14 +24,23 @@ logger = logging.getLogger(__name__)
 AUTH_EXPECTED_LOGIN = "EXPECTED_LOGIN"
 AUTH_INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
 
+DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
+
 
 class GameServer:
     """Lobby: login + matchmaking. Creates one Match per matched pair."""
 
-    def __init__(self, db_url: str = db.DEFAULT_DB_URL):
+    def __init__(self, db_url: str = db.DEFAULT_DB_URL, redis_client=None):
         self.db_conn = db.init_db(db_url)
+        # Injected by the tests; built from the environment when running for
+        # real. Connecting is lazy, so nothing happens until a room is used.
+        self.redis = (
+            redis_client
+            if redis_client is not None
+            else redis.asyncio.from_url(DEFAULT_REDIS_URL)
+        )
         self.matchmaker = Matchmaker()
-        self.room_manager = RoomManager(self.db_conn)
+        self.room_manager = RoomManager(self.db_conn, self.redis)
         self._pending_matches: dict[tuple[str, str], Match] = {}
         self._match_lock = asyncio.Lock()
 

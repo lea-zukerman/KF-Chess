@@ -1,6 +1,8 @@
 import asyncio
 import unittest
 
+import fakeredis.aioredis
+
 from server import db
 from server.match import Match
 from server.rooms import ROOM_ID_ALPHABET, ROOM_ID_LENGTH, RoomManager, RoomNotFound
@@ -12,7 +14,9 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         db.authenticate_or_register(self.db_conn, "Alice", "pass123")
         db.authenticate_or_register(self.db_conn, "Bob", "pass123")
         db.authenticate_or_register(self.db_conn, "Carol", "pass123")
-        self.manager = RoomManager(self.db_conn)
+        # Implements real Redis semantics (nx, ex, sorted sets) in memory,
+        # so these stay honest tests without needing a Redis process.
+        self.manager = RoomManager(self.db_conn, fakeredis.aioredis.FakeRedis())
 
     async def test_create_room_returns_id_from_allowed_alphabet(self):
         room_id = await self.manager.create_room("Alice")

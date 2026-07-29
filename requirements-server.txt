@@ -2,3 +2,6 @@
 # the server never renders anything, so it does not need OpenCV.
 websockets>=12.0
 psycopg[binary]>=3.1
+# Used through redis.asyncio: unlike the database, Redis sits on the hot
+# path, so these calls must not block the event loop.
+redis>=5.0
