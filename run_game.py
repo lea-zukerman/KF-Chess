@@ -1,8 +1,14 @@
 """One-shot local launcher: starts the server and a few GUI clients so a whole
 game can be played without opening several terminals by hand.
 
-    python run_game.py            # server + 2 player windows on localhost
+    python run_game.py                      # server + 2 player windows
     python run_game.py --players 3
+    python run_game.py --no-server          # clients only, server already up
+
+Use --no-server when the server is running under docker compose: it already
+holds the port, so starting a second one here just fails to bind. Pass
+--host 127.0.0.1 with it -- "localhost" can resolve to ::1 first, which the
+container's published port does not answer on.
 
 Each client still shows its own login dialog -- log in with a different
 username in each window so matchmaking pairs them. Closing the player windows
@@ -38,18 +44,28 @@ def main() -> None:
     parser.add_argument("--host", default="localhost")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--pieces-dir", default=DEFAULT_PIECES_DIR)
+    parser.add_argument("--no-server", action="store_true",
+                        help="attach to a server that is already running")
     args = parser.parse_args()
 
     procs: list[subprocess.Popen] = []
-    server = subprocess.Popen([sys.executable, "-m", "server", "--host", args.host,
-                               "--port", str(args.port)])
-    procs.append(server)
-    print(f"Started server (pid {server.pid}) on {args.host}:{args.port}")
 
-    if not _wait_until_listening(args.host, args.port):
-        print("Server did not start listening in time; shutting down.")
-        server.terminate()
-        return
+    if args.no_server:
+        if not _wait_until_listening(args.host, args.port, timeout=2.0):
+            print(f"Nothing is listening on {args.host}:{args.port}. "
+                  f"Start it (docker compose up -d) or drop --no-server.")
+            return
+        print(f"Using the server already on {args.host}:{args.port}")
+    else:
+        server = subprocess.Popen([sys.executable, "-m", "server", "--host", args.host,
+                                   "--port", str(args.port)])
+        procs.append(server)
+        print(f"Started server (pid {server.pid}) on {args.host}:{args.port}")
+
+        if not _wait_until_listening(args.host, args.port):
+            print("Server did not start listening in time; shutting down.")
+            server.terminate()
+            return
 
     clients: list[subprocess.Popen] = []
     for i in range(args.players):
