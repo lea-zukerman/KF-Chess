@@ -82,8 +82,21 @@ class Matchmaker:
 
     def _wake(self, opponent: str, username: str, elo: int) -> None:
         """Hand the result to the waiting coroutine, if it is in this process.
-        With one server it always is; with several, only the process holding
-        that player's connection can wake them."""
+
+        LIMITATION -- this is why the deployment runs one gateway and many
+        shards, rather than many of both. With two gateways, a player waiting
+        on gateway A is claimed out of Redis by a player arriving at gateway
+        B, and this call finds nothing to wake: the first waits out the full
+        timeout and is told no opponent was found, while the second sits on a
+        shard waiting for someone who never connects. Worse than a hang,
+        because both sides look like ordinary outcomes.
+
+        Server_Design.md 5.2.1 puts the fix on the event bus, which is stage
+        4; a Redis queue would work too, but the bus is where the assignment
+        message belongs anyway. The other half of that section -- expiring
+        stale entries by timestamp so a dead process strands nobody -- is
+        already done, in _drop_expired.
+        """
         waiting = self._waiting.get(opponent)
         if waiting is not None:
             waiting.opponent = (username, elo)

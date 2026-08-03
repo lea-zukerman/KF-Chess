@@ -1,6 +1,8 @@
-# Stage 1 of Server_Design.md section 12: the existing single-process
-# server, containerised, with its user data moved out to PostgreSQL.
-# Splitting the server into gateway/shards comes in stage 3.
+# Stage 3 of Server_Design.md section 12, and the minimal slice of
+# section 11: the server is split into a gateway, an allocator and two
+# shards. Two shards are the point -- they prove a pair reaches one of
+# them by a placement decision while the other runs a different game.
+# Five shards would prove nothing more.
 services:
   postgres:
     image: postgres:16
@@ -20,8 +22,8 @@ services:
       - pgdata:/var/lib/postgresql/data
 
   # No volume, deliberately. Everything Redis holds here is short-lived
-  # by nature -- a queue entry, a session, a live room -- so losing it
-  # costs a re-queue, not data. See Server_Design.md section 4.2.
+  # by nature -- a queue entry, a session, a live room, a placement -- so
+  # losing it costs a re-queue, not data. See Server_Design.md section 4.2.
   redis:
     image: redis:7-alpine
     healthcheck:
@@ -30,8 +32,12 @@ services:
       timeout: 3s
       retries: 15
 
-  # Gateway and shard run the same image with a different command: the split
-  # is a matter of which entry point runs, not of two codebases.
+  # Every service below runs the same image with a different command: the
+  # split is a matter of which entry point runs, not of several codebases.
+
+  # One gateway, not several. Matchmaker._wake only reaches a player in its
+  # own process, so a second gateway would strand players mid-search. See
+  # the note there and Server_Design.md 5.2.1 -- the fix is stage 4.
   gateway:
     build:
       context: .
@@ -44,8 +50,8 @@ services:
       # its internal DNS, the same way a Service name resolves in k8s.
       DB_URL: postgresql://kfchess:kfchess@postgres:5432/kfchess
       REDIS_URL: redis://redis:6379
-      SHARD_HOST: shard
-      SHARD_PORT: "8766"
+      ALLOCATOR_HOST: allocator
+      ALLOCATOR_PORT: "8767"
     ports:
       - "8765:8765"
     depends_on:
@@ -53,8 +59,30 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      allocator:
+        condition: service_started
 
-  shard:
+  allocator:
+    build:
+      context: .
+      args:
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST-}
+    command: ["python", "-m", "services.allocator", "--host", "0.0.0.0", "--port", "8767"]
+    environment:
+      REDIS_URL: redis://redis:6379
+      # The fleet, by name. Adding a shard here is the whole of scaling out
+      # at this stage; no gateway or shard needs to know.
+      SHARDS: shard-1:8766,shard-2:8766
+    # Not published: only gateways ask an allocator, never a browser.
+    expose:
+      - "8767"
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # shard-1 and shard-2 are identical on purpose. Nothing in their
+  # configuration decides which games they run -- the allocator does.
+  shard-1:
     build:
       context: .
       args:
@@ -63,6 +91,20 @@ services:
     environment:
       DB_URL: postgresql://kfchess:kfchess@postgres:5432/kfchess
     # Not published: only gateways reach a shard, never a browser.
+    expose:
+      - "8766"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  shard-2:
+    build:
+      context: .
+      args:
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST-}
+    command: ["python", "-m", "services.shard", "--host", "0.0.0.0", "--port", "8766"]
+    environment:
+      DB_URL: postgresql://kfchess:kfchess@postgres:5432/kfchess
     expose:
       - "8766"
     depends_on:
