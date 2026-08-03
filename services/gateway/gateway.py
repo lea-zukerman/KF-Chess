@@ -17,10 +17,12 @@ import websockets
 
 from protocol.messages import AuthError, LoggedIn, LoginRequest
 
-from . import db, lobby
+from server import db
+from server.matchmaking import Matchmaker
+from server.rooms import RoomManager
 from transport.connection import Connection, ConnectionClosed
-from .matchmaking import Matchmaker
-from .rooms import RoomManager
+
+from . import lobby
 
 logger = logging.getLogger(__name__)
 

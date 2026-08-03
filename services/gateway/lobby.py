@@ -28,9 +28,9 @@ from protocol.messages import (
 from transport.connection import Connection
 from transport.relay import relay
 
-from . import db
-from .matchmaking import NoOpponentFound
-from .rooms import RoomNotFound
+from server import db
+from server.matchmaking import NoOpponentFound
+from server.rooms import RoomNotFound
 
 logger = logging.getLogger(__name__)
 

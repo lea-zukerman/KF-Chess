@@ -20,13 +20,13 @@ from protocol.messages import (
     SearchingForOpponent,
 )
 from server import db, matchmaking
-from server.lobby import FLOW_EXPECTED_HOME_COMMAND, FLOW_NO_OPPONENT_FOUND, ROOM_NOT_FOUND
-from server.server import (
+from services.gateway.lobby import FLOW_EXPECTED_HOME_COMMAND, FLOW_NO_OPPONENT_FOUND, ROOM_NOT_FOUND
+from services.gateway.gateway import (
     AUTH_EXPECTED_LOGIN,
     AUTH_INVALID_CREDENTIALS,
     GameServer,
 )
-from server.shard import Shard
+from services.shard.shard import Shard
 
 
 class GameServerTests(unittest.IsolatedAsyncioTestCase):

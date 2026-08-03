@@ -1,4 +1,4 @@
-from .server import main
+from .shard import main
 
 if __name__ == "__main__":
     main()

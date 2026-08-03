@@ -21,8 +21,8 @@ import websockets
 from protocol.messages import AttachToMatch
 from transport.connection import Connection, ConnectionClosed
 
-from . import db
-from .match import Match
+from server import db
+from server.match import Match
 
 logger = logging.getLogger(__name__)
 

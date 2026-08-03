@@ -21,9 +21,13 @@ COPY kungfu_chess/ ./kungfu_chess/
 COPY protocol/ ./protocol/
 COPY transport/ ./transport/
 COPY server/ ./server/
+COPY services/ ./services/
 
 EXPOSE 8765
 
+# The gateway is only the default: shard and allocator run from this same
+# image with a different command. See docker-compose.yml.
+#
 # 0.0.0.0 rather than localhost: the port has to be reachable from
 # outside the container.
-CMD ["python", "-m", "server", "--host", "0.0.0.0", "--port", "8765"]
+CMD ["python", "-m", "services.gateway", "--host", "0.0.0.0", "--port", "8765"]

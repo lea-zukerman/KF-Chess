@@ -57,7 +57,7 @@ def main() -> None:
             return
         print(f"Using the server already on {args.host}:{args.port}")
     else:
-        server = subprocess.Popen([sys.executable, "-m", "server", "--host", args.host,
+        server = subprocess.Popen([sys.executable, "-m", "services.gateway", "--host", args.host,
                                    "--port", str(args.port)])
         procs.append(server)
         print(f"Started server (pid {server.pid}) on {args.host}:{args.port}")
