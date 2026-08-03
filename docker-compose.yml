@@ -30,7 +30,9 @@ services:
       timeout: 3s
       retries: 15
 
-  app:
+  # Gateway and shard run the same image with a different command: the split
+  # is a matter of which entry point runs, not of two codebases.
+  gateway:
     build:
       context: .
       args:
@@ -42,12 +44,29 @@ services:
       # its internal DNS, the same way a Service name resolves in k8s.
       DB_URL: postgresql://kfchess:kfchess@postgres:5432/kfchess
       REDIS_URL: redis://redis:6379
+      SHARD_HOST: shard
+      SHARD_PORT: "8766"
     ports:
       - "8765:8765"
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+
+  shard:
+    build:
+      context: .
+      args:
+        PIP_TRUSTED_HOST: ${PIP_TRUSTED_HOST-}
+    command: ["python", "-m", "server.shard", "--host", "0.0.0.0", "--port", "8766"]
+    environment:
+      DB_URL: postgresql://kfchess:kfchess@postgres:5432/kfchess
+    # Not published: only gateways reach a shard, never a browser.
+    expose:
+      - "8766"
+    depends_on:
+      postgres:
         condition: service_healthy
 
 volumes:

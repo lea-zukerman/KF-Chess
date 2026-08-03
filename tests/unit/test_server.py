@@ -26,11 +26,26 @@ from server.server import (
     AUTH_INVALID_CREDENTIALS,
     GameServer,
 )
+from server.shard import Shard
 
 
 class GameServerTests(unittest.IsolatedAsyncioTestCase):
+    async def _start_shard(self, db_url=":memory:") -> int:
+        """A real shard on a random port. The gateway relays to it, so these
+        tests exercise both hops rather than mocking the second one."""
+        shard = Shard(db_url=db_url)
+        ws_server = await websockets.serve(shard.handle_gateway, "localhost", 0)
+        self.addAsyncCleanup(ws_server.close)
+        return ws_server.sockets[0].getsockname()[1]
+
     async def _start_server(self, db_url=":memory:"):
-        server = GameServer(db_url=db_url, redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True))
+        shard_port = await self._start_shard(db_url)
+        server = GameServer(
+            db_url=db_url,
+            redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
+            shard_host="localhost",
+            shard_port=shard_port,
+        )
         ws_server = await websockets.serve(server.handle_client, "localhost", 0)
         self.addAsyncCleanup(ws_server.close)
         port = ws_server.sockets[0].getsockname()[1]

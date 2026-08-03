@@ -49,6 +49,23 @@ class JumpCommand:
     square: str
 
 
+# ---- gateway -> shard ----
+
+@dataclass(frozen=True)
+class AttachToMatch:
+    """Sent once, as the first message on a gateway's connection to a shard.
+
+    The gateway has already decided who plays whom, so the shard is told
+    rather than asked. Both players' gateways derive the same (white, black)
+    pair independently, which is what lets two separate connections meet on
+    one Match without the shard coordinating anything.
+    """
+    type: ClassVar[str] = "attach_to_match"
+    white: str
+    black: str
+    role: str
+
+
 # ---- server -> client ----
 
 @dataclass(frozen=True)

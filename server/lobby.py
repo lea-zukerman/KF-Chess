@@ -17,6 +17,7 @@ import logging
 from typing import Awaitable, Callable
 
 from protocol.messages import (
+    AttachToMatch,
     CreateRoomRequest,
     ErrorMessage,
     JoinRoomRequest,
@@ -24,9 +25,10 @@ from protocol.messages import (
     RoomCreated,
     SearchingForOpponent,
 )
+from transport.connection import Connection
+from transport.relay import relay
 
 from . import db
-from .match import Match
 from .matchmaking import NoOpponentFound
 from .rooms import RoomNotFound
 
@@ -71,10 +73,9 @@ async def _handle_play(server, connection, username: str, message: PlayRequest) 
         return True
 
     white_username, black_username = sorted((username, opponent_username))
-    match = await _get_or_create_match(server, white_username, black_username)
     role = "w" if username == white_username else "b"
     logger.info("client '%s' matched with '%s' as %s", username, opponent_username, role)
-    await match.join(connection, role)
+    await _relay_to_shard(server, connection, white_username, black_username, role)
     return True
 
 
@@ -100,19 +101,14 @@ async def _handle_join_room(server, connection, username: str, message: JoinRoom
     return True
 
 
-async def _get_or_create_match(server, white_username: str, black_username: str) -> Match:
-    """Both matched players independently compute the same (white, black) key
-    and arrive here separately -- the first to arrive creates the Match, the
-    second finds it waiting and consumes the pending entry. The dict/lock live
-    on the GameServer (shared per-server state); only this coordination logic
-    lives here."""
-    key = (white_username, black_username)
-    async with server._match_lock:
-        match = server._pending_matches.get(key)
-        if match is None:
-            match = Match(white_username, black_username, server.db_conn)
-            match.start()
-            server._pending_matches[key] = match
-        else:
-            del server._pending_matches[key]
-    return match
+async def _relay_to_shard(server, connection, white: str, black: str, role: str) -> None:
+    """Hand this player's connection to the shard running their game.
+
+    Both players' gateways derive the same (white, black) pair, so they name
+    the same Match without talking to each other -- the pairing logic that
+    used to be a dict on the GameServer now lives on the shard, keyed by that
+    pair. From here the gateway only copies messages.
+    """
+    upstream = await Connection.connect(server.shard_host, server.shard_port)
+    await upstream.send(AttachToMatch(white, black, role))
+    await relay(connection, upstream)
