@@ -104,11 +104,13 @@ async def _handle_join_room(server, connection, username: str, message: JoinRoom
 async def _relay_to_shard(server, connection, white: str, black: str, role: str) -> None:
     """Hand this player's connection to the shard running their game.
 
-    Both players' gateways derive the same (white, black) pair, so they name
-    the same Match without talking to each other -- the pairing logic that
-    used to be a dict on the GameServer now lives on the shard, keyed by that
-    pair. From here the gateway only copies messages.
+    Both players' gateways name the same (white, black) pair, so the
+    allocator gives them the same shard and they meet on one Match without
+    talking to each other. The pair they can derive alone; the shard they
+    cannot, which is the whole reason the allocator exists. From here the
+    gateway only copies messages.
     """
-    upstream = await Connection.connect(server.shard_host, server.shard_port)
+    host, port = await server.locate_shard(white, black)
+    upstream = await Connection.connect(host, port)
     await upstream.send(AttachToMatch(white, black, role))
     await relay(connection, upstream)

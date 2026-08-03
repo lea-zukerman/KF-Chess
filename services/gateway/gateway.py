@@ -15,7 +15,7 @@ import os
 import redis.asyncio
 import websockets
 
-from protocol.messages import AuthError, LoggedIn, LoginRequest
+from protocol.messages import AllocateRequest, AuthError, LoggedIn, LoginRequest, MatchLocation
 
 from server import db
 from server.matchmaking import Matchmaker
@@ -30,10 +30,14 @@ AUTH_EXPECTED_LOGIN = "EXPECTED_LOGIN"
 AUTH_INVALID_CREDENTIALS = "INVALID_CREDENTIALS"
 
 DEFAULT_REDIS_URL = os.environ.get("REDIS_URL", "redis://localhost:6379")
-# One shard for now, named directly. The Game Allocator replaces this with a
-# choice between many -- see Server_Design.md section 3.3.
-DEFAULT_SHARD_HOST = os.environ.get("SHARD_HOST", "localhost")
-DEFAULT_SHARD_PORT = int(os.environ.get("SHARD_PORT", "8766"))
+# No shard is named here on purpose: which one runs a game is the
+# allocator's call, not configuration. See Server_Design.md section 3.3.
+DEFAULT_ALLOCATOR_HOST = os.environ.get("ALLOCATOR_HOST", "localhost")
+DEFAULT_ALLOCATOR_PORT = int(os.environ.get("ALLOCATOR_PORT", "8767"))
+
+
+class ShardUnavailable(Exception):
+    """The allocator did not answer with a location."""
 
 
 class GameServer:
@@ -44,8 +48,8 @@ class GameServer:
         self,
         db_url: str = db.DEFAULT_DB_URL,
         redis_client=None,
-        shard_host: str = DEFAULT_SHARD_HOST,
-        shard_port: int = DEFAULT_SHARD_PORT,
+        allocator_host: str = DEFAULT_ALLOCATOR_HOST,
+        allocator_port: int = DEFAULT_ALLOCATOR_PORT,
     ):
         self.db_conn = db.init_db(db_url)
         # Injected by the tests; built from the environment when running for
@@ -57,8 +61,25 @@ class GameServer:
         )
         self.matchmaker = Matchmaker(self.redis)
         self.room_manager = RoomManager(self.db_conn, self.redis)
-        self.shard_host = shard_host
-        self.shard_port = shard_port
+        self.allocator_host = allocator_host
+        self.allocator_port = allocator_port
+
+    async def locate_shard(self, white: str, black: str) -> tuple[str, int]:
+        """Ask the allocator where this pair's game runs.
+
+        A fresh connection per ask: this happens once per player per game,
+        not per move, so pooling would be complexity without a matching cost.
+        """
+        allocator = await Connection.connect(self.allocator_host, self.allocator_port)
+        try:
+            await allocator.send(AllocateRequest(white, black))
+            reply = await allocator.receive()
+        finally:
+            await allocator.close()
+
+        if not isinstance(reply, MatchLocation):
+            raise ShardUnavailable(f"allocator replied {reply!r}")
+        return reply.host, reply.port
 
     async def handle_client(self, websocket) -> None:
         connection = Connection(websocket)

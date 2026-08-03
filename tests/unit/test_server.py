@@ -26,6 +26,7 @@ from services.gateway.gateway import (
     AUTH_INVALID_CREDENTIALS,
     GameServer,
 )
+from services.allocator.allocator import Allocator
 from services.shard.shard import Shard
 
 
@@ -38,13 +39,24 @@ class GameServerTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(ws_server.close)
         return ws_server.sockets[0].getsockname()[1]
 
-    async def _start_server(self, db_url=":memory:"):
-        shard_port = await self._start_shard(db_url)
+    async def _start_allocator(self, shards) -> int:
+        """A real allocator, so the gateway's placement hop is exercised too
+        rather than mocked into always naming the one shard there is."""
+        allocator = Allocator(fakeredis.aioredis.FakeRedis(decode_responses=True), shards)
+        ws_server = await websockets.serve(allocator.handle_gateway, "localhost", 0)
+        self.addAsyncCleanup(ws_server.close)
+        return ws_server.sockets[0].getsockname()[1]
+
+    async def _start_server(self, db_url=":memory:", shard_count=1):
+        shard_ports = [await self._start_shard(db_url) for _ in range(shard_count)]
+        allocator_port = await self._start_allocator(
+            [("localhost", port) for port in shard_ports]
+        )
         server = GameServer(
             db_url=db_url,
             redis_client=fakeredis.aioredis.FakeRedis(decode_responses=True),
-            shard_host="localhost",
-            shard_port=shard_port,
+            allocator_host="localhost",
+            allocator_port=allocator_port,
         )
         ws_server = await websockets.serve(server.handle_client, "localhost", 0)
         self.addAsyncCleanup(ws_server.close)
