@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import time
 import unittest
 from unittest import mock
@@ -6,6 +7,41 @@ from unittest import mock
 import fakeredis.aioredis
 
 from server import matchmaking
+
+
+class YieldingRedis:
+    """fakeredis, but every command yields the event loop the way a socket does.
+
+    fakeredis answers without ever suspending, so two coroutines cannot
+    interleave between commands in front of it -- and a bug that needs exactly
+    that interleaving is invisible to the whole suite. A real client cannot
+    behave that way: every command is a round trip, and awaiting one lets the
+    other player's coroutine run. This models that one property and nothing
+    else.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def __getattr__(self, name):
+        attr = getattr(self._inner, name)
+        if not callable(attr):
+            return attr
+
+        def command(*args, **kwargs):
+            result = attr(*args, **kwargs)
+            # iscoroutine, not isawaitable: a Pipeline defines __await__ but
+            # is an object to use, not a call to wait for.
+            if not inspect.iscoroutine(result):
+                return result
+
+            async def yielding():
+                await asyncio.sleep(0)
+                return await result
+
+            return yielding()
+
+        return command
 
 
 class MatchmakerTests(unittest.IsolatedAsyncioTestCase):
@@ -93,9 +129,32 @@ class MatchmakerTests(unittest.IsolatedAsyncioTestCase):
 
         # bob has no coroutine waiting, so alice claims him and gets nothing
         # back to wake -- but he must be claimed rather than expired.
-        opponent = await self.mm._claim_opponent("alice", 1200)
+        opponent = await self.mm._claim_or_enqueue("alice", 1200)
 
         self.assertEqual(opponent, ("bob", 1200))
+
+    async def test_two_players_arriving_together_are_both_matched(self):
+        """Both reach the pool inside one Redis round trip of each other.
+
+        This is the case that broke in the containerised run: each saw an
+        empty pool, each sat down in it, and both waited out the full timeout
+        while standing right in front of the other. It needs YieldingRedis to
+        show up at all -- against plain fakeredis it passes on the broken
+        code, which is why it survived this long.
+        """
+        mm = matchmaking.Matchmaker(
+            YieldingRedis(fakeredis.aioredis.FakeRedis(decode_responses=True))
+        )
+
+        with mock.patch.object(matchmaking, "MATCH_TIMEOUT_SECONDS", 2):
+            alice_result, bob_result = await asyncio.gather(
+                mm.find_match("alice", 1200),
+                mm.find_match("bob", 1200),
+            )
+
+        self.assertEqual(alice_result, ("bob", 1200))
+        self.assertEqual(bob_result, ("alice", 1200))
+        self.assertEqual(mm._waiting, {})
 
 
 if __name__ == "__main__":

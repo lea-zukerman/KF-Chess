@@ -15,6 +15,8 @@ moving it out would mean writing something untestable.
 import asyncio
 import time
 
+from redis.exceptions import WatchError
+
 ELO_RANGE = 100
 MATCH_TIMEOUT_SECONDS = 60
 
@@ -44,15 +46,17 @@ class Matchmaker:
         wait to be picked. Raises NoOpponentFound after MATCH_TIMEOUT_SECONDS."""
         await self._drop_expired()
 
-        opponent = await self._claim_opponent(username, elo)
-        if opponent is not None:
-            self._wake(opponent[0], username, elo)
-            return opponent
-
+        # Registered before the pool can contain me, so there is no instant
+        # where another player can claim me out of Redis and find nobody to
+        # wake.
         me = _WaitingPlayer(elo)
         self._waiting[username] = me
-        await self._enqueue(username, elo)
         try:
+            opponent = await self._claim_or_enqueue(username, elo)
+            if opponent is not None:
+                self._wake(opponent[0], username, elo)
+                return opponent
+
             await asyncio.wait_for(me.event.wait(), timeout=MATCH_TIMEOUT_SECONDS)
             return me.opponent
         except asyncio.TimeoutError:
@@ -61,24 +65,49 @@ class Matchmaker:
             self._waiting.pop(username, None)
             await self._dequeue(username)
 
-    async def _claim_opponent(self, username: str, elo: int) -> tuple[str, int] | None:
-        """Take one waiting player within range, or None.
+    async def _claim_or_enqueue(self, username: str, elo: int) -> tuple[str, int] | None:
+        """Take one waiting player within range, or join the pool. One decision.
 
-        zrem is the whole concurrency story: it returns how many members it
-        actually removed, so when two processes race for the same candidate
-        exactly one gets 1 back and the other gets 0 and moves on. No lock,
-        and no read-then-write window to lose.
+        Taking and joining have to be the same step. Split in two, there are
+        awaits in between, and two players arriving inside that window each
+        see an empty pool, each sit down in it, and both wait out the full
+        timeout standing right in front of the other. That is not theoretical:
+        it is what broke the first four-player run against the containers,
+        with 5ms between them.
+
+        WATCH makes it atomic without a lock. If the pool changed between the
+        read and the write, EXEC does nothing, and looking again is correct
+        rather than merely safe -- the change is very often the opponent who
+        just arrived.
         """
-        candidates = await self.redis.zrangebyscore(
-            WAITING_BY_ELO, elo - ELO_RANGE, elo + ELO_RANGE, withscores=True
-        )
-        for candidate, candidate_elo in candidates:
-            if candidate == username:
-                continue
-            if await self.redis.zrem(WAITING_BY_ELO, candidate):
-                await self.redis.zrem(WAITING_BY_TIME, candidate)
-                return candidate, int(candidate_elo)
-        return None
+        async with self.redis.pipeline() as pipe:
+            while True:
+                try:
+                    await pipe.watch(WAITING_BY_ELO)
+                    candidates = await pipe.zrangebyscore(
+                        WAITING_BY_ELO, elo - ELO_RANGE, elo + ELO_RANGE, withscores=True
+                    )
+                    opponent = next(
+                        (
+                            (name, int(score))
+                            for name, score in candidates
+                            if name != username
+                        ),
+                        None,
+                    )
+
+                    pipe.multi()
+                    if opponent is not None:
+                        pipe.zrem(WAITING_BY_ELO, opponent[0])
+                        pipe.zrem(WAITING_BY_TIME, opponent[0])
+                    else:
+                        pipe.zadd(WAITING_BY_ELO, {username: elo})
+                        pipe.zadd(WAITING_BY_TIME, {username: time.time()})
+                    await pipe.execute()
+
+                    return opponent
+                except WatchError:
+                    continue
 
     def _wake(self, opponent: str, username: str, elo: int) -> None:
         """Hand the result to the waiting coroutine, if it is in this process.
