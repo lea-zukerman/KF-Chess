@@ -20,6 +20,8 @@ _MESSAGE_CLASSES = (
     messages.MoveCommand,
     messages.JumpCommand,
     messages.AttachToMatch,
+    messages.AllocateRequest,
+    messages.MatchLocation,
     messages.LoggedIn,
     messages.SearchingForOpponent,
     messages.RoomCreated,

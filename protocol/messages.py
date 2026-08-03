@@ -66,6 +66,28 @@ class AttachToMatch:
     role: str
 
 
+# ---- gateway <-> allocator ----
+
+@dataclass(frozen=True)
+class AllocateRequest:
+    """Asks which shard should run this pair's game.
+
+    The pair is already decided -- by the Matchmaker or by a room id -- so
+    this only answers "where", never "who". See Server_Design.md 3.3.
+    """
+    type: ClassVar[str] = "allocate_request"
+    white: str
+    black: str
+
+
+@dataclass(frozen=True)
+class MatchLocation:
+    """The shard both of this pair's gateways must connect to."""
+    type: ClassVar[str] = "match_location"
+    host: str
+    port: int
+
+
 # ---- server -> client ----
 
 @dataclass(frozen=True)
