@@ -3,20 +3,20 @@ import unittest
 
 import fakeredis.aioredis
 
-from server import db
-from server.match import Match
-from server.rooms import ROOM_ID_ALPHABET, ROOM_ID_LENGTH, RoomManager, RoomNotFound
+from server.rooms import (
+    ROOM_ID_ALPHABET,
+    ROOM_ID_LENGTH,
+    RoomAbandoned,
+    RoomManager,
+    RoomNotFound,
+)
 
 
 class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
-        self.db_conn = db.init_db(":memory:")
-        db.authenticate_or_register(self.db_conn, "Alice", "pass123")
-        db.authenticate_or_register(self.db_conn, "Bob", "pass123")
-        db.authenticate_or_register(self.db_conn, "Carol", "pass123")
-        # Implements real Redis semantics (nx, ex, sorted sets) in memory,
+        # Implements real Redis semantics (hsetnx, blpop, expire) in memory,
         # so these stay honest tests without needing a Redis process.
-        self.manager = RoomManager(self.db_conn, fakeredis.aioredis.FakeRedis(decode_responses=True))
+        self.manager = RoomManager(fakeredis.aioredis.FakeRedis(decode_responses=True))
 
     async def test_create_room_returns_id_from_allowed_alphabet(self):
         room_id = await self.manager.create_room("Alice")
@@ -34,37 +34,48 @@ class RoomManagerTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RoomNotFound):
             await self.manager.join_room("ZZZZ", "Bob")
 
-    async def test_first_joiner_becomes_black_and_creates_the_match(self):
+    async def test_first_joiner_becomes_black(self):
         room_id = await self.manager.create_room("Alice")
 
-        match, role = await self.manager.join_room(room_id, "Bob")
-        self.addCleanup(match.stop)
+        white, black, role = await self.manager.join_room(room_id, "Bob")
 
-        self.assertEqual(role, "b")
-        self.assertIsInstance(match, Match)
-        self.assertEqual(match.game_state.white_name, "Alice")
-        self.assertEqual(match.game_state.black_name, "Bob")
+        self.assertEqual((white, black, role), ("Alice", "Bob", "b"))
 
-    async def test_waiting_creator_receives_the_same_match(self):
+    async def test_third_person_becomes_observer_on_the_same_pair(self):
         room_id = await self.manager.create_room("Alice")
-        waiter = asyncio.ensure_future(self.manager.wait_for_match(room_id))
+        await self.manager.join_room(room_id, "Bob")
 
-        joined_match, _role = await self.manager.join_room(room_id, "Bob")
-        self.addCleanup(joined_match.stop)
+        white, black, role = await self.manager.join_room(room_id, "Carol")
 
-        creator_match = await asyncio.wait_for(waiter, timeout=1)
-        self.assertIs(creator_match, joined_match)
+        self.assertEqual((white, black, role), ("Alice", "Bob", "observer"))
 
-    async def test_third_person_becomes_observer_on_the_same_match(self):
+    async def test_waiting_creator_learns_the_joiner(self):
+        room_id = await self.manager.create_room("Alice")
+        waiter = asyncio.ensure_future(self.manager.wait_for_opponent(room_id))
+        await asyncio.sleep(0)  # let the waiter reach its blpop
+
+        await self.manager.join_room(room_id, "Bob")
+
+        self.assertEqual(await asyncio.wait_for(waiter, timeout=2), "Bob")
+
+    async def test_two_joiners_cannot_both_be_black(self):
+        """The cross-process race: hsetnx decides it, not a lock. Two people
+        typing the same room id at once must not both get the black seat."""
         room_id = await self.manager.create_room("Alice")
 
-        first_match, first_role = await self.manager.join_room(room_id, "Bob")
-        self.addCleanup(first_match.stop)
-        second_match, second_role = await self.manager.join_room(room_id, "Carol")
+        results = await asyncio.gather(
+            self.manager.join_room(room_id, "Bob"),
+            self.manager.join_room(room_id, "Carol"),
+        )
 
-        self.assertEqual(first_role, "b")
-        self.assertEqual(second_role, "observer")
-        self.assertIs(second_match, first_match)
+        roles = sorted(role for _white, _black, role in results)
+        self.assertEqual(roles, ["b", "observer"])
+
+    async def test_a_room_nobody_joins_times_out(self):
+        room_id = await self.manager.create_room("Alice")
+
+        with self.assertRaises(RoomAbandoned):
+            await self.manager.wait_for_opponent(room_id, timeout=1)
 
 
 if __name__ == "__main__":

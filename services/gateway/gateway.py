@@ -60,7 +60,7 @@ class GameServer:
             else redis.asyncio.from_url(DEFAULT_REDIS_URL, decode_responses=True)
         )
         self.matchmaker = Matchmaker(self.redis)
-        self.room_manager = RoomManager(self.db_conn, self.redis)
+        self.room_manager = RoomManager(self.redis)
         self.allocator_host = allocator_host
         self.allocator_port = allocator_port
 

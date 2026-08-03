@@ -31,10 +31,16 @@ from services.shard.shard import Shard
 
 
 class GameServerTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        # Every shard _start_shard builds, so a test can ask where the games
+        # actually ended up rather than only what the players were told.
+        self.shards = []
+
     async def _start_shard(self, db_url=":memory:") -> int:
         """A real shard on a random port. The gateway relays to it, so these
         tests exercise both hops rather than mocking the second one."""
         shard = Shard(db_url=db_url)
+        self.shards.append(shard)
         ws_server = await websockets.serve(shard.handle_gateway, "localhost", 0)
         self.addAsyncCleanup(ws_server.close)
         return ws_server.sockets[0].getsockname()[1]
@@ -197,6 +203,36 @@ class GameServerTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(role1, RoleAssigned("w"))
         self.assertEqual(role2, RoleAssigned("b"))
+
+    async def test_a_room_pair_meets_on_one_shard_out_of_two(self):
+        """The point of the stage. Asserting on RoleAssigned would not catch
+        this: if the two players were sent to different shards, each shard
+        would build its own Match from the same AttachToMatch and tell its
+        lone player its role, and both would sit waiting for an opponent who
+        is on the other machine. Counting Matches is what distinguishes
+        "they met" from "they were each told they had".
+        """
+        _, uri = await self._start_server(shard_count=2)
+
+        async with websockets.connect(uri) as creator, websockets.connect(uri) as joiner:
+            await creator.send(codec.encode(LoginRequest("Alice", "pass123")))
+            await creator.recv()  # logged_in
+            await joiner.send(codec.encode(LoginRequest("Bob", "pass123")))
+            await joiner.recv()  # logged_in
+
+            await creator.send(codec.encode(CreateRoomRequest()))
+            created = codec.decode(await creator.recv())
+
+            await joiner.send(codec.encode(JoinRoomRequest(created.room_id)))
+            creator_role = codec.decode(await creator.recv())
+            joiner_role = codec.decode(await joiner.recv())
+
+            live_matches = sum(len(shard._matches) for shard in self.shards)
+
+        self.assertEqual(creator_role, RoleAssigned("w"))
+        self.assertEqual(joiner_role, RoleAssigned("b"))
+        self.assertEqual(len(self.shards), 2)
+        self.assertEqual(live_matches, 1)
 
     async def test_joining_unknown_room_errors_but_keeps_connection_open(self):
         _, uri = await self._start_server()

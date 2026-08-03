@@ -30,13 +30,14 @@ from transport.relay import relay
 
 from server import db
 from server.matchmaking import NoOpponentFound
-from server.rooms import RoomNotFound
+from server.rooms import RoomAbandoned, RoomNotFound
 
 logger = logging.getLogger(__name__)
 
 FLOW_EXPECTED_HOME_COMMAND = "EXPECTED_HOME_COMMAND"
 FLOW_NO_OPPONENT_FOUND = "NO_OPPONENT_FOUND"
 ROOM_NOT_FOUND = "ROOM_NOT_FOUND"
+ROOM_ABANDONED = "ROOM_ABANDONED"
 
 LobbyHandler = Callable[..., Awaitable[bool]]
 LOBBY_HANDLERS: dict[type, LobbyHandler] = {}
@@ -84,20 +85,31 @@ async def _handle_create_room(server, connection, username: str, message: Create
     room_id = await server.room_manager.create_room(username)
     logger.info("client '%s' created room %s", username, room_id)
     await connection.send(RoomCreated(room_id))
-    match = await server.room_manager.wait_for_match(room_id)
-    await match.join(connection, "w")
+
+    try:
+        opponent_username = await server.room_manager.wait_for_opponent(room_id)
+    except RoomAbandoned:
+        await connection.send(ErrorMessage(ROOM_ABANDONED))
+        await connection.close()
+        return True
+
+    logger.info("client '%s' matched with '%s' in room %s", username, opponent_username, room_id)
+    # The creator is white, per Server_Design.md 5.3. Rooms ignore rating, so
+    # unlike the Play flow there is nothing to sort the pair by.
+    await _relay_to_shard(server, connection, username, opponent_username, "w")
     return True
 
 
 @register(JoinRoomRequest)
 async def _handle_join_room(server, connection, username: str, message: JoinRoomRequest) -> bool:
     try:
-        match, role = await server.room_manager.join_room(message.room_id, username)
+        white, black, role = await server.room_manager.join_room(message.room_id, username)
     except RoomNotFound:
         await connection.send(ErrorMessage(ROOM_NOT_FOUND))
         return False
+
     logger.info("client '%s' joined room %s as %s", username, message.room_id, role)
-    await match.join(connection, role)
+    await _relay_to_shard(server, connection, white, black, role)
     return True
 
 
