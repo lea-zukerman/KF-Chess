@@ -179,15 +179,17 @@ If a player disconnects, the game auto-resigns after a 20-second countdown.
 
 ### Graphical client
 
-Instead of the text client, run the graphical one (currently "Play" only):
+Instead of the text client, run the graphical one:
 
 ```bash
 python -m client.gui_client       # --host / --port / --pieces-dir as above
 ```
 
-It shows a tkinter login dialog, then opens a board window. Left-click a
-source cell then a destination to move; right-click a piece to jump it in
-place; press `q` to quit. `run_game.py` launches this client for you.
+It shows a tkinter login dialog, then a home screen with **Play**, **Create
+room** and **Join room** (with a box for the id) — the same three ways in
+that the text client offers. Then a board window opens: left-click a source
+cell then a destination to move; right-click a piece to jump it in place;
+press `q` to quit. `run_game.py` launches this client for you.
 
 ## Known limitations
 
